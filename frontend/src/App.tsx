@@ -15,6 +15,7 @@ import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import ConfirmSignupPage from './pages/ConfirmSignupPage';
 import LiveMonitorPage from './pages/LiveMonitorPage';
+import TranscriptPage from './pages/TranscriptPage';
 
 // Candidate Pages
 import CandidateLoginPage from './pages/candidate/CandidateLoginPage';
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/jd" element={<JDPage />} />
             <Route path="/candidates" element={<CandidatesPage />} />
             <Route path="/monitor" element={<LiveMonitorPage />} />
+            <Route path="/transcript/:interviewId" element={<TranscriptPage />} />
             <Route path="/report/:interviewId" element={<ReportPage />} />
           </Route>
         </Route>

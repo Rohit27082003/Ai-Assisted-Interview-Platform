@@ -72,6 +72,7 @@ export default function DashboardPage() {
     interviewed: 'badge-green',
     evaluated: 'badge-green',
     reported: 'badge-green',
+    terminated: 'badge-red',
   };
 
   if (loading) {
@@ -154,7 +155,7 @@ export default function DashboardPage() {
                 <tr className="text-left text-sm text-gray-500 border-b">
                   <th className="pb-3 font-medium">Name</th>
                   <th className="pb-3 font-medium">Email</th>
-                  <th className="pb-3 font-medium">Score</th>
+                  <th className="pb-3 font-medium">Resume Match</th>
                   <th className="pb-3 font-medium">Status</th>
                 </tr>
               </thead>

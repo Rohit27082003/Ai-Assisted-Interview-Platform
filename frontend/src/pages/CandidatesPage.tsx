@@ -483,9 +483,19 @@ export default function CandidatesPage() {
                         {['interviewed', 'evaluated', 'reported'].includes(c.status) && (
                           <button
                             className="text-sm btn-secondary"
-                            onClick={() => navigate(`/report/${c.candidate_id}`)}
+                            onClick={() => navigate(`/report/${c.interview_id}`)}
                           >
                             View Report
+                          </button>
+                        )}
+                        {c.interview_id && (
+                          <button
+                            className="text-sm btn-secondary flex items-center gap-1"
+                            onClick={() => navigate(`/transcript/${c.interview_id}`)}
+                            title="View Transcript"
+                          >
+                            <FileText className="w-3 h-3" />
+                            Transcript
                           </button>
                         )}
                         <button

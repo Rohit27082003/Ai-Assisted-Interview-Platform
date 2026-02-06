@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.database import init_db
+from app.services.graphs.postgres_checkpoint import ensure_checkpoint_schema
 from app.api.routes import (
     jd_routes, 
     candidate_routes, 
@@ -25,7 +26,8 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     logger.info("Starting AI Interview Orchestrator...")
     await init_db()
-    logger.info("Database initialized.")
+    await ensure_checkpoint_schema()
+    logger.info("Database and Checkpoints initialized.")
     yield
     logger.info("Shutting down AI Interview Orchestrator...")
 

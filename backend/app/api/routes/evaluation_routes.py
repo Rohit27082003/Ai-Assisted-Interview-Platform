@@ -32,8 +32,8 @@ async def evaluate_interview(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    if interview.status != InterviewStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="Interview must be completed before evaluation")
+    if interview.status not in (InterviewStatus.COMPLETED, InterviewStatus.TERMINATED):
+        raise HTTPException(status_code=400, detail="Interview must be completed or terminated before evaluation")
 
     candidate = await db.get(Candidate, interview.candidate_id)
     jd = await db.get(JobDescription, candidate.jd_id) if candidate else None

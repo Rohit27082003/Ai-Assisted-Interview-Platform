@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.models import Candidate, JobDescription, CandidateStatus
@@ -463,11 +464,20 @@ async def list_candidates(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """List candidates, optionally filtered by JD."""
-    query = select(Candidate).order_by(Candidate.created_at.desc())
+    query = select(Candidate).options(selectinload(Candidate.interviews)).order_by(Candidate.created_at.desc())
     if jd_id:
         query = query.where(Candidate.jd_id == jd_id)
     result = await db.execute(query)
-    return result.scalars().all()
+    candidates = result.scalars().all()
+    
+    # Attach latest interview_id if exists
+    for c in candidates:
+        if c.interviews:
+            #Sort by created_at desc to get latest
+            latest = sorted(c.interviews, key=lambda i: i.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
+            c.interview_id = latest.interview_id
+            
+    return candidates
 
 
 @router.get("/{candidate_id}", response_model=CandidateResponse)

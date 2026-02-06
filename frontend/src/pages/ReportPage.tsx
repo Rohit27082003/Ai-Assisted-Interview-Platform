@@ -111,13 +111,17 @@ export default function ReportPage() {
               {evaluation.evaluations.map((ev, i) => (
                 <div key={i} className="border rounded-lg p-3">
                   <p className="font-medium">{ev.question}</p>
+                  <div className="mt-2 bg-gray-50 p-2 rounded text-sm text-gray-700">
+                    <span className="font-semibold text-gray-900">Answer: </span>
+                    {ev.answer}
+                  </div>
                   <div className="flex gap-4 mt-2 text-sm">
                     <span>Correctness: {ev.correctness}/5</span>
                     <span>Depth: {ev.depth}/5</span>
                     <span>Reasoning: {ev.reasoning}/5</span>
                     <span>Clarity: {ev.clarity}/5</span>
                   </div>
-                  <p className="text-sm text-gray-500 mt-1">{ev.justification}</p>
+                  <p className="text-sm text-gray-500 mt-1"><span className="font-semibold">Analysis: </span>{ev.justification}</p>
                 </div>
               ))}
             </div>
@@ -228,10 +232,15 @@ export default function ReportPage() {
             </h3>
           </div>
           <ul className="space-y-2">
-            {report.cheating_flags.map((f, i) => (
+            {report.cheating_flags.map((f: any, i) => (
               <li key={i} className="text-sm text-yellow-700 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                {f}
+                {typeof f === 'string' ? f : (
+                  <span>
+                    <span className="font-semibold">{f.level || 'Warning'}:</span>{' '}
+                    {Array.isArray(f.reasons) ? f.reasons.join(', ') : JSON.stringify(f)}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

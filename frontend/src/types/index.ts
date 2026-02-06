@@ -29,6 +29,7 @@ export interface Candidate {
   status: string;
   focus_areas: FocusArea[];
   created_at: string;
+  interview_id?: string;
 }
 
 export interface FocusArea {
@@ -62,6 +63,7 @@ export interface Interview {
   started_at: string | null;
   current_pillar: string | null;
   question_number: number;
+  transcript?: any[];
 }
 
 export interface InterviewQuestion {
@@ -74,7 +76,7 @@ export interface InterviewQuestion {
 }
 
 export interface WSMessage {
-  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error';
+  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error' | 'terminated';
   data: Record<string, any>;
 }
 

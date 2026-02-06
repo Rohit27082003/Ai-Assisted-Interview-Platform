@@ -6,7 +6,7 @@ import {
 import toast from 'react-hot-toast';
 import type { InterviewQuestion, WSMessage } from '../types';
 
-type Phase = 'idle' | 'reading' | 'answering' | 'processing' | 'complete';
+type Phase = 'idle' | 'reading' | 'answering' | 'processing' | 'complete' | 'terminated';
 
 export default function InterviewPage() {
   const { interviewId } = useParams<{ interviewId: string }>();
@@ -25,9 +25,26 @@ export default function InterviewPage() {
   const [cheatingWarnings, setCheatingWarnings] = useState<string[]>([]);
   const [questionsAnswered, setQuestionsAnswered] = useState(0);
   const [transcript, setTranscript] = useState<Array<{ q: string; a: string }>>([]);
+  const [permissionStatus, setPermissionStatus] = useState<'checking' | 'granted' | 'denied'>('checking');
+
+  // Permission check on mount
+  useEffect(() => {
+    checkMicrophonePermission();
+  }, []);
+
+  const checkMicrophonePermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      setPermissionStatus('granted');
+    } catch (err) {
+      console.error('Microphone permission denied:', err);
+      setPermissionStatus('denied');
+    }
+  };
 
   const connectWebSocket = useCallback(() => {
-    if (!interviewId) return;
+    if (permissionStatus !== 'granted' || !interviewId) return;
 
     // Use direct connection to backend (127.0.0.1 to avoid ipv6 localhost issues)
     const wsUrl = `ws://127.0.0.1:8000/api/interviews/ws/${interviewId}`;
@@ -56,7 +73,7 @@ export default function InterviewPage() {
       console.error('WebSocket Error:', error);
       toast.error('WebSocket connection error');
     };
-  }, [interviewId]);
+  }, [interviewId, permissionStatus]);
 
   const handleWSMessage = (msg: WSMessage) => {
     switch (msg.type) {
@@ -76,8 +93,12 @@ export default function InterviewPage() {
 
       case 'timer':
         setTimeLeft(msg.data.seconds_left);
-        if (msg.data.phase === 'answering' && msg.data.seconds_left > 0) {
-          setPhase('answering');
+        if (msg.data.phase === 'answering') {
+          if (phase !== 'answering') {
+            setPhase('answering');
+            // Auto-start recording when entering answering phase
+            startRecording();
+          }
           setTimeLeft(msg.data.seconds_left);
         }
         if (msg.data.auto_closed) {
@@ -98,28 +119,72 @@ export default function InterviewPage() {
       case 'error':
         toast.error(msg.data.message);
         break;
+
+      case 'terminated':
+        setPhase('terminated');
+        toast.error(msg.data.message, { duration: 6000 });
+        break;
     }
   };
 
+  // WebSocket Connection Effect
   useEffect(() => {
     connectWebSocket();
     return () => {
       wsRef.current?.close();
-      stopRecording();
     };
   }, [connectWebSocket]);
 
-  // Timer countdown
+  // Tab Visibility Tracking Effect
   useEffect(() => {
-    if (timeLeft <= 0 || phase === 'idle' || phase === 'complete') return;
-    const timer = setInterval(() => {
-      setTimeLeft((t) => Math.max(0, t - 1));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [timeLeft, phase]);
+    const handleVisibilityChange = () => {
+      // Only report violation if we are actively connected and in an active phase
+      if (document.hidden && connected && phase !== 'complete' && phase !== 'idle') {
+        wsRef.current?.send(JSON.stringify({
+          type: 'violation',
+          data: { reason: 'tab_switch' }
+        }));
+        toast.error("Warning: Tab switching is monitored and counts as a violation.");
+      }
+    };
 
-  const startInterview = () => {
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [connected, phase]);
+
+  // Timer countdown and phase handling
+  useEffect(() => {
+    if (phase === 'idle' || phase === 'complete' || phase === 'processing' || phase === 'terminated') return;
+
+    if (timeLeft === 0) {
+      if (phase === 'reading') {
+        // Reading time over -> Start Answering
+        setPhase('answering');
+        setTimeLeft(currentQuestion?.answer_time_seconds || 60);
+        startRecording();
+      } else if (phase === 'answering') {
+        // Answer time over -> Auto submit
+        submitAnswer();
+      }
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft((t) => t - 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [timeLeft, phase, currentQuestion]);
+
+  const startInterview = async () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch (err) {
+        console.error("Full screen denied:", err);
+      }
       wsRef.current.send(JSON.stringify({ type: 'start', data: {} }));
     } else {
       toast.error('WebSocket not connected');
@@ -206,6 +271,54 @@ export default function InterviewPage() {
             Back to Candidates
           </button>
         </div>
+      </div>
+    );
+  }
+
+  if (phase === 'terminated') {
+    return (
+      <div className="max-w-2xl mx-auto text-center py-20">
+        <AlertTriangle className="w-20 h-20 text-red-500 mx-auto mb-6" />
+        <h1 className="text-3xl font-bold mb-4 text-red-600">Interview Terminated</h1>
+        <p className="text-gray-600 mb-2">
+          This session has been terminated due to multiple integrity violations.
+        </p>
+        <p className="text-gray-500 mb-8">
+          A report has been generated and sent to the recruitment team.
+        </p>
+        <div className="flex gap-4 justify-center">
+          <button className="btn-primary bg-gray-600 hover:bg-gray-700" onClick={() => navigate('/candidates')}>
+            Return to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (permissionStatus === 'checking') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh]">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4" />
+        <p className="text-gray-600">Checking microphone permissions...</p>
+      </div>
+    );
+  }
+
+  if (permissionStatus === 'denied') {
+    return (
+      <div className="max-w-md mx-auto text-center py-20 px-4">
+        <MicOff className="w-16 h-16 text-red-500 mx-auto mb-6" />
+        <h2 className="text-2xl font-bold mb-4">Microphone Access Required</h2>
+        <p className="text-gray-600 mb-8">
+          To proceed with the interview, we need access to your microphone.
+          Please enable microphone permissions in your browser settings and refresh the page.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="btn-primary"
+        >
+          Try Again
+        </button>
       </div>
     );
   }
@@ -299,50 +412,44 @@ export default function InterviewPage() {
             </p>
           </div>
 
-          {/* Answer Area */}
+          {/* Answer Area - Voice Only */}
           {phase === 'answering' && (
-            <div className="card space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold">Your Answer</h3>
-                <div className="flex gap-2">
-                  {!recording ? (
-                    <button
-                      className="btn-secondary flex items-center gap-2"
-                      onClick={startRecording}
-                    >
-                      <Mic className="w-4 h-4" /> Start Recording
-                    </button>
-                  ) : (
-                    <button
-                      className="btn-danger flex items-center gap-2"
-                      onClick={stopRecording}
-                    >
-                      <MicOff className="w-4 h-4" /> Stop Recording
-                    </button>
-                  )}
-                </div>
-              </div>
+            <div className="card flex flex-col items-center justify-center py-10 space-y-6">
 
-              {recording && (
-                <div className="flex items-center gap-3 bg-red-50 p-3 rounded-lg">
-                  <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-                  <span className="text-red-700 font-medium">Recording audio...</span>
+              {!recording ? (
+                <div className="flex flex-col items-center gap-2">
+                  <span className="relative flex h-6 w-6">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-6 w-6 bg-green-500"></span>
+                  </span>
+                  <p className="text-gray-600 font-medium">Recording will start automatically...</p>
                 </div>
+              ) : (
+                <>
+                  <div className="flex flex-col items-center gap-2">
+                    <span className="relative flex h-6 w-6">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-6 w-6 bg-red-500"></span>
+                    </span>
+                    <p className="text-red-600 font-medium animate-pulse">Recording...</p>
+                  </div>
+
+                  <button
+                    className="btn-primary bg-green-600 hover:bg-green-700 flex items-center gap-2 px-8 py-4 text-lg"
+                    onClick={() => {
+                      stopRecording();
+                      setPhase('processing');
+                      setQuestionsAnswered((q) => q + 1);
+                      wsRef.current?.send(JSON.stringify({
+                        type: 'answer_complete',
+                        data: { text: '' },
+                      }));
+                    }}
+                  >
+                    <CheckCircle className="w-6 h-6" /> Finish & Submit Answer
+                  </button>
+                </>
               )}
-
-              <textarea
-                className="input-field min-h-[120px]"
-                placeholder="Type your answer here (or use voice recording above)..."
-                value={answerText}
-                onChange={(e) => setAnswerText(e.target.value)}
-              />
-
-              <button
-                className="btn-primary flex items-center gap-2"
-                onClick={submitAnswer}
-              >
-                <Send className="w-4 h-4" /> Submit Answer
-              </button>
             </div>
           )}
 

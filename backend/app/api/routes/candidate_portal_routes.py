@@ -125,6 +125,8 @@ async def get_portal_info(
     )
 
 
+from app.api.routes.interview_routes import ensure_active_session
+
 @router.post("/start-interview", response_model=StartInterviewResponse)
 async def start_candidate_interview(
     candidate: AuthenticatedCandidate = Depends(require_candidate_session),
@@ -143,6 +145,11 @@ async def start_candidate_interview(
             detail="Candidate not found",
         )
     
+    # Get JD for initialization
+    jd = await db.get(JobDescription, db_candidate.jd_id)
+    if not jd:
+        raise HTTPException(status_code=404, detail="Job description not found")
+
     # Check if candidate can start interview
     if db_candidate.status not in (CandidateStatus.SHORTLISTED, CandidateStatus.FOCUS_READY):
         raise HTTPException(
@@ -163,7 +170,10 @@ async def start_candidate_interview(
                 detail="Interview already completed",
             )
         elif existing_interview.status == InterviewStatus.IN_PROGRESS:
-            # Return existing interview
+            # Ensure session is active (restore or init)
+            ensure_active_session(existing_interview, db_candidate, jd)
+            await db.commit() # Save state if initialized
+            
             return StartInterviewResponse(
                 interview_id=existing_interview.interview_id,
                 candidate_id=candidate.candidate_id,
@@ -177,6 +187,10 @@ async def start_candidate_interview(
             db_candidate.status = CandidateStatus.INTERVIEWING
             await db.flush()
             
+            # Ensure session is active
+            ensure_active_session(existing_interview, db_candidate, jd)
+            await db.commit()
+
             return StartInterviewResponse(
                 interview_id=existing_interview.interview_id,
                 candidate_id=candidate.candidate_id,
@@ -196,6 +210,10 @@ async def start_candidate_interview(
     db_candidate.status = CandidateStatus.INTERVIEWING
     
     await db.flush()
+    
+    # Initialize session
+    ensure_active_session(interview, db_candidate, jd)
+    await db.commit()
     
     logger.info(f"Interview started for candidate {candidate.candidate_id}")
     

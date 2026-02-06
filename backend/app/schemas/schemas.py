@@ -56,6 +56,7 @@ class CandidateResponse(BaseModel):
     shortlist_score: float = 0.0
     status: str
     focus_areas: List[FocusArea] = Field(default_factory=list)
+    interview_id: Optional[UUID] = None
     created_at: datetime
 
     class Config:
@@ -159,6 +160,7 @@ class InterviewResponse(BaseModel):
     started_at: Optional[datetime] = None
     current_pillar: Optional[str] = None
     question_number: int = 0
+    transcript: List[Dict[str, Any]] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -193,7 +195,7 @@ class ReportResponse(BaseModel):
     jd_title: str
     strengths: List[str]
     weaknesses: List[str]
-    cheating_flags: List[str]
+    cheating_flags: List[Any]
     topic_scores: Dict[str, float]
     final_score: float
     confidence_score: float
@@ -216,7 +218,7 @@ class CandidateGraphState(BaseModel):
     shortlist_score: float = 0.0
     focus_areas: List[FocusArea] = Field(default_factory=list)
     interview_progress: InterviewProgressState = None
-    cheating_flags: List[str] = Field(default_factory=list)
+    cheating_flags: List[Any] = Field(default_factory=list)
     evaluation: Dict[str, Any] = Field(default_factory=dict)
     report_id: str = ""
     status: str = "uploaded"
@@ -244,3 +246,6 @@ class WSAudioChunk(BaseModel):
     interview_id: str
     chunk: str  # base64 encoded audio
     sequence: int
+
+class WSViolationMessage(BaseModel):
+    reason: str
