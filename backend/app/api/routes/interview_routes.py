@@ -21,6 +21,7 @@ from app.services.graphs.interview_orchestration import build_interview_graph
 from app.services.agents.cheating_detection import get_cheating_detector
 from app.services.aws.transcribe_service import get_transcribe_service
 from app.services.aws.s3_service import get_s3_service
+from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedUser
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -36,6 +37,7 @@ active_sessions: Dict[str, Dict[str, Any]] = {}
 async def start_interview(
     request: InterviewStartRequest,
     db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Initialize an interview session for a candidate."""
     candidate = await db.get(Candidate, request.candidate_id)
@@ -103,7 +105,11 @@ async def start_interview(
 
 
 @router.get("/{interview_id}", response_model=InterviewResponse)
-async def get_interview(interview_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_interview(
+    interview_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
     """Get interview details."""
     interview = await db.get(Interview, interview_id)
     if not interview:
@@ -112,7 +118,10 @@ async def get_interview(interview_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{interview_id}/progress")
-async def get_progress(interview_id: UUID):
+async def get_progress(
+    interview_id: UUID,
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
     """Get current interview progress from active session."""
     session = active_sessions.get(str(interview_id))
     if not session:
@@ -130,6 +139,83 @@ async def get_progress(interview_id: UUID):
         ),
         cheating_level=state.get("cheating_flags", [{}])[-1].get("level", "none") if state.get("cheating_flags") else "none",
     )
+
+
+# ── Live Monitoring ─────────────────────────────────────────────
+
+@router.get("/monitor/active")
+async def get_active_interviews(
+    db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
+    """Get list of currently active interviews."""
+    if not active_sessions:
+        return []
+
+    # Get candidate details for active sessions
+    candidate_ids = [UUID(s["candidate_id"]) for s in active_sessions.values()]
+    if not candidate_ids:
+        return []
+        
+    result = await db.execute(select(Candidate).where(Candidate.candidate_id.in_(candidate_ids)))
+    candidates = {str(c.candidate_id): c for c in result.scalars().all()}
+    
+    stats = []
+    for interview_id, session in active_sessions.items():
+        state = session.get("graph_state", {})
+        cand_id = session.get("candidate_id")
+        candidate = candidates.get(cand_id)
+        
+        stats.append({
+            "interview_id": interview_id,
+            "candidate_name": candidate.name if candidate else "Unknown",
+            "candidate_email": candidate.email if candidate else "",
+            "current_pillar": state.get("current_pillar", ""),
+            "question_number": state.get("question_number", 0),
+            "status": "in_progress",
+        })
+    return stats
+
+
+@router.post("/{interview_id}/terminate")
+async def terminate_interview(
+    interview_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
+    """Force terminate an active interview."""
+    sess_id = str(interview_id)
+    session = active_sessions.get(sess_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not active")
+    
+    # Mark as terminated flag to stop the loop
+    session["terminated"] = True
+    
+    # Close websocket if open
+    ws = session.get("websocket")
+    if ws:
+        try:
+            await ws.send_json({
+                "type": "error",
+                "data": {"message": "Interview terminated by recruiter"}
+            })
+            await ws.close()
+        except Exception:
+            pass
+            
+    # Update DB
+    interview = await db.get(Interview, interview_id)
+    if interview:
+        interview.status = InterviewStatus.TERMINATED
+        interview.ended_at = datetime.now(timezone.utc)
+        await db.commit()
+    
+    # Clean up from memory
+    active_sessions.pop(sess_id, None)
+    
+    logger.info(f"Interview {interview_id} terminated by recruiter")
+    return {"message": "Interview terminated"}
 
 
 # ── WebSocket Interview Session ──────────────────────────────────
@@ -157,6 +243,10 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
 
     session = active_sessions.get(interview_id)
     if not session:
+        # Try to restore session from DB (in case of server restart)
+        session = await _restore_session(interview_id)
+
+    if not session:
         await websocket.send_json({
             "type": "error",
             "data": {"message": "No active interview session found"}
@@ -165,11 +255,22 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
         return
 
     graph_state = session["graph_state"]
+    # Store WebSocket connection for external termination
+    session["websocket"] = websocket
+
     cheating_detector = get_cheating_detector()
     transcribe_service = get_transcribe_service()
 
     try:
         while True:
+            # Check if session was terminated externally
+            if session.get("terminated"):
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {"message": "Interview terminated by recruiter"}
+                })
+                break
+
             # Receive message from client
             raw_msg = await websocket.receive_text()
             msg = json.loads(raw_msg)
@@ -405,14 +506,59 @@ async def _run_timer(websocket: WebSocket, phase: str, total_seconds: int):
             break
 
 
-async def _auto_close_answer(websocket, transcribe_service, stream_id, seconds, interview_id):
-    """Auto-close the answer phase after timeout. Server-side timer enforcement."""
+async def _auto_close_answer(websocket: WebSocket, transcribe_service: Any, stream_id: str, seconds: int, interview_id: str):
+    """Auto-close the answer phase after strict time limit."""
     await asyncio.sleep(seconds)
     try:
-        await transcribe_service.stop_stream(stream_id)
+        # Stop transcription to get final text
+        final_text = await transcribe_service.stop_stream(stream_id)
+        
+        # Save transcript to session if available
+        if final_text:
+            session = active_sessions.get(interview_id)
+            if session:
+                session["graph_state"]["current_answer"] = final_text
+                logger.info(f"Auto-saved transcript for interview {interview_id}: {len(final_text)} chars")
+        
+        # Notify client to submit what they have
         await websocket.send_json({
             "type": "timer",
             "data": {"phase": "answering", "seconds_left": 0, "auto_closed": True}
         })
-    except Exception:
-        pass
+        
+        # In a real rigorous implementation, we might process the answer here directly
+        # if the client doesn't respond, but for now we trust the client's auto-submit
+        # triggered by the "auto_closed" flag.
+    except Exception as e:
+        logger.error(f"Error in auto-close for interview {interview_id}: {e}")
+
+
+async def _restore_session(interview_id: str) -> Dict[str, Any]:
+    """Recover an active session from the database if server restarted."""
+    try:
+        async with async_session_factory() as db:
+            interview = await db.get(Interview, UUID(interview_id))
+            if not interview:
+                return None
+
+            # Allow recovery if status is pending or in_progress
+            if interview.status not in (InterviewStatus.PENDING, InterviewStatus.IN_PROGRESS):
+                return None
+
+            # Restore state
+            if not interview.state_json:
+                return None
+
+            graph_state = interview.state_json
+
+            # Re-populate active_sessions
+            session_data = {
+                "graph_state": graph_state,
+                "candidate_id": str(interview.candidate_id),
+            }
+            active_sessions[interview_id] = session_data
+            logger.info(f"Restored session for interview {interview_id} from DB")
+            return session_data
+    except Exception as e:
+        logger.error(f"Failed to restore session {interview_id}: {e}")
+        return None

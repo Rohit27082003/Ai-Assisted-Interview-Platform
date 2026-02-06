@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Upload, Filter, Play, Target, FileCheck, Users
+  Plus, Upload, Filter, Play, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { candidateApi, jdApi, interviewApi } from '../services/api';
 import type { JobDescription, Candidate, ShortlistResponse } from '../types';
+
+interface CandidateSession {
+  candidate_id: string;
+  name: string;
+  email: string;
+  session_id: string;
+  session_expires_at: string;
+}
 
 export default function CandidatesPage() {
   const navigate = useNavigate();
@@ -20,6 +28,11 @@ export default function CandidatesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [shortlistResult, setShortlistResult] = useState<ShortlistResponse | null>(null);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
+
+  // New state for threshold and sessions
+  const [threshold, setThreshold] = useState(0.65);
+  const [showSessions, setShowSessions] = useState(false);
+  const [sessions, setSessions] = useState<CandidateSession[]>([]);
 
   useEffect(() => {
     loadData();
@@ -85,14 +98,65 @@ export default function CandidatesPage() {
     if (!selectedJDId) return;
     setActionLoading((p) => ({ ...p, shortlist: true }));
     try {
-      const result = await candidateApi.shortlist(selectedJDId);
+      const result = await candidateApi.shortlist(selectedJDId, threshold);
       setShortlistResult(result);
       await loadCandidates(selectedJDId);
-      toast.success(`Shortlisted ${result.shortlisted.length} candidates`);
+      toast.success(`Shortlisted ${result.shortlisted.length} candidates (threshold: ${(threshold * 100).toFixed(0)}%)`);
     } catch {
       toast.error('Shortlisting failed');
     } finally {
       setActionLoading((p) => ({ ...p, shortlist: false }));
+    }
+  };
+
+  const handleRerunShortlist = async () => {
+    if (!selectedJDId) return;
+    setActionLoading((p) => ({ ...p, rerun: true }));
+    try {
+      const result = await candidateApi.rerunShortlist(selectedJDId, threshold);
+      setShortlistResult(result);
+      await loadCandidates(selectedJDId);
+      toast.success(`Re-shortlisted with threshold ${(threshold * 100).toFixed(0)}%: ${result.shortlisted.length} shortlisted`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Re-shortlisting failed';
+      toast.error(message);
+    } finally {
+      setActionLoading((p) => ({ ...p, rerun: false }));
+    }
+  };
+
+  const handleGenerateSessions = async () => {
+    if (!selectedJDId) return;
+    setActionLoading((p) => ({ ...p, sessions: true }));
+    try {
+      const result = await candidateApi.generateSessions(selectedJDId);
+      setSessions(result.sessions);
+      setShowSessions(true);
+      toast.success(`Generated ${result.total_generated} session IDs`);
+    } catch {
+      toast.error('Failed to generate sessions');
+    } finally {
+      setActionLoading((p) => ({ ...p, sessions: false }));
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success('Copied to clipboard!');
+  };
+
+  const handleDeleteCandidate = async (candidateId: string) => {
+    if (!window.confirm('Are you sure you want to delete this candidate?')) return;
+
+    setActionLoading((p) => ({ ...p, [candidateId + '_delete']: true }));
+    try {
+      await candidateApi.delete(candidateId);
+      toast.success('Candidate deleted');
+      await loadCandidates(selectedJDId);
+    } catch {
+      toast.error('Failed to delete candidate');
+    } finally {
+      setActionLoading((p) => ({ ...p, [candidateId + '_delete']: false }));
     }
   };
 
@@ -159,9 +223,9 @@ export default function CandidatesPage() {
         </div>
       </div>
 
-      {/* JD Selector */}
-      <div className="card">
-        <div className="flex items-center gap-4">
+      {/* JD Selector & Threshold Controls */}
+      <div className="card space-y-4">
+        <div className="flex items-center gap-4 flex-wrap">
           <Filter className="w-5 h-5 text-gray-400" />
           <select
             className="input-field max-w-md"
@@ -175,18 +239,115 @@ export default function CandidatesPage() {
               </option>
             ))}
           </select>
-          {selectedJDId && (
-            <button
-              className="btn-primary flex items-center gap-2"
-              onClick={handleShortlist}
-              disabled={actionLoading['shortlist']}
-            >
-              <FileCheck className="w-4 h-4" />
-              {actionLoading['shortlist'] ? 'AI Shortlisting...' : 'Run Shortlisting'}
-            </button>
-          )}
         </div>
+
+        {selectedJDId && (
+          <>
+            {/* Threshold Slider */}
+            <div className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <Sliders className="w-5 h-5 text-primary-600" />
+              <div className="flex-1">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Shortlisting Threshold
+                  </label>
+                  <span className="text-lg font-bold text-primary-600">
+                    {(threshold * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={threshold * 100}
+                  onChange={(e) => setThreshold(Number(e.target.value) / 100)}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary-600"
+                />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>More candidates</span>
+                  <span>Higher quality</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3 flex-wrap">
+              <button
+                className="btn-primary flex items-center gap-2"
+                onClick={handleShortlist}
+                disabled={actionLoading['shortlist']}
+              >
+                <FileCheck className="w-4 h-4" />
+                {actionLoading['shortlist'] ? 'AI Shortlisting...' : 'Run Shortlisting'}
+              </button>
+
+              <button
+                className="btn-secondary flex items-center gap-2"
+                onClick={handleRerunShortlist}
+                disabled={actionLoading['rerun']}
+              >
+                <RefreshCw className="w-4 h-4" />
+                {actionLoading['rerun'] ? 'Re-evaluating...' : 'Re-run with New Threshold'}
+              </button>
+
+              <button
+                className="btn-secondary flex items-center gap-2 ml-auto"
+                onClick={handleGenerateSessions}
+                disabled={actionLoading['sessions']}
+              >
+                <Key className="w-4 h-4" />
+                {actionLoading['sessions'] ? 'Generating...' : 'Generate Session IDs'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
+
+      {/* Session IDs Modal/Section */}
+      {showSessions && sessions.length > 0 && (
+        <div className="card border-2 border-primary-200 dark:border-primary-800">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-lg flex items-center gap-2">
+              <Key className="w-5 h-5 text-primary-600" />
+              Candidate Session IDs
+            </h3>
+            <button
+              onClick={() => setShowSessions(false)}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              ✕
+            </button>
+          </div>
+          <p className="text-sm text-gray-600 mb-4">
+            Share these session IDs with candidates so they can log in to their interview portal.
+          </p>
+          <div className="space-y-2 max-h-60 overflow-y-auto">
+            {sessions.map((s) => (
+              <div
+                key={s.candidate_id}
+                className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
+              >
+                <div>
+                  <p className="font-medium">{s.name}</p>
+                  <p className="text-sm text-gray-500">{s.email}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <code className="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded text-xs font-mono">
+                    {s.session_id.substring(0, 12)}...
+                  </code>
+                  <button
+                    onClick={() => copyToClipboard(s.session_id)}
+                    className="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
+                    title="Copy session ID"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Add Candidate Form */}
       {showForm && (
@@ -290,6 +451,22 @@ export default function CandidatesPage() {
                     </td>
                     <td className="py-3">
                       <div className="flex gap-2">
+                        {/* View Resume button */}
+                        <button
+                          className="text-sm btn-secondary flex items-center gap-1"
+                          onClick={async () => {
+                            try {
+                              const result = await candidateApi.getResumeUrl(c.candidate_id);
+                              window.open(result.download_url, '_blank');
+                            } catch {
+                              toast.error('Resume not available');
+                            }
+                          }}
+                          title="View Resume"
+                        >
+                          <FileText className="w-3 h-3" />
+                          Resume
+                        </button>
                         {c.status === 'shortlisted' && (
                           <button
                             className="text-sm btn-secondary flex items-center gap-1"
@@ -302,18 +479,7 @@ export default function CandidatesPage() {
                               : 'Focus Areas'}
                           </button>
                         )}
-                        {(c.status === 'focus_ready' || c.status === 'shortlisted') && (
-                          <button
-                            className="text-sm btn-primary flex items-center gap-1"
-                            onClick={() => handleStartInterview(c.candidate_id)}
-                            disabled={actionLoading[c.candidate_id + '_interview']}
-                          >
-                            <Play className="w-3 h-3" />
-                            {actionLoading[c.candidate_id + '_interview']
-                              ? 'Starting...'
-                              : 'Interview'}
-                          </button>
-                        )}
+                        {/* Interview button removed for recruiters */}
                         {['interviewed', 'evaluated', 'reported'].includes(c.status) && (
                           <button
                             className="text-sm btn-secondary"
@@ -322,6 +488,14 @@ export default function CandidatesPage() {
                             View Report
                           </button>
                         )}
+                        <button
+                          className="text-sm btn-secondary text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => handleDeleteCandidate(c.candidate_id)}
+                          disabled={actionLoading[c.candidate_id + '_delete']}
+                          title="Delete Candidate"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -331,6 +505,6 @@ export default function CandidatesPage() {
           </div>
         )}
       </div>
-    </div>
+    </div >
   );
 }

@@ -77,8 +77,32 @@ class ShortlistResult(BaseModel):
 class ShortlistResponse(BaseModel):
     jd_id: UUID
     total_candidates: int
+    threshold_used: float = 0.65
     shortlisted: List[ShortlistResult]
     rejected: List[ShortlistResult]
+
+
+# ── Session Schemas (for candidate login) ─────────────────────────
+
+class ShortlistRequest(BaseModel):
+    """Request for shortlisting with custom threshold."""
+    threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+
+
+class CandidateSessionInfo(BaseModel):
+    """Session info for a single candidate."""
+    candidate_id: UUID
+    name: str
+    email: str
+    session_id: str
+    session_expires_at: datetime
+
+
+class GenerateSessionsResponse(BaseModel):
+    """Response when generating sessions for shortlisted candidates."""
+    jd_id: UUID
+    total_generated: int
+    sessions: List[CandidateSessionInfo]
 
 
 # ── Focus Area Schemas ────────────────────────────────────────────

@@ -8,6 +8,7 @@ import type {
   EvaluationResponse,
   Report,
 } from '../types';
+import { getAuthHeader } from '../store/AuthContext';
 
 const API_BASE = '/api';
 
@@ -15,6 +16,27 @@ const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
 });
+
+// Add auth header interceptor
+api.interceptors.request.use((config) => {
+  const authHeader = getAuthHeader();
+  if (authHeader.Authorization) {
+    config.headers.Authorization = authHeader.Authorization;
+  }
+  return config;
+});
+
+// Add response interceptor for auth errors
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Dispatch global event for auth failure
+      window.dispatchEvent(new Event('auth:unauthorized'));
+    }
+    return Promise.reject(error);
+  }
+);
 
 // ── Job Descriptions ─────────────────────────────────────────
 
@@ -32,6 +54,10 @@ export const jdApi = {
   get: async (jdId: string): Promise<JobDescription> => {
     const { data } = await api.get(`/jd/${jdId}`);
     return data;
+  },
+
+  delete: async (jdId: string): Promise<void> => {
+    await api.delete(`/jd/${jdId}`);
   },
 };
 
@@ -54,8 +80,18 @@ export const candidateApi = {
     return data;
   },
 
-  shortlist: async (jdId: string): Promise<ShortlistResponse> => {
-    const { data } = await api.post(`/candidates/${jdId}/shortlist`);
+  shortlist: async (jdId: string, threshold: number = 0.65): Promise<ShortlistResponse> => {
+    const { data } = await api.post(`/candidates/${jdId}/shortlist?threshold=${threshold}`);
+    return data;
+  },
+
+  rerunShortlist: async (jdId: string, threshold: number): Promise<ShortlistResponse> => {
+    const { data } = await api.post(`/candidates/${jdId}/rerun-shortlist?threshold=${threshold}`);
+    return data;
+  },
+
+  generateSessions: async (jdId: string) => {
+    const { data } = await api.post(`/candidates/${jdId}/generate-sessions`);
     return data;
   },
 
@@ -73,6 +109,15 @@ export const candidateApi = {
   get: async (candidateId: string): Promise<Candidate> => {
     const { data } = await api.get(`/candidates/${candidateId}`);
     return data;
+  },
+
+  getResumeUrl: async (candidateId: string): Promise<{ download_url: string }> => {
+    const { data } = await api.get(`/candidates/${candidateId}/resume`);
+    return data;
+  },
+
+  delete: async (candidateId: string): Promise<void> => {
+    await api.delete(`/candidates/${candidateId}`);
   },
 };
 
@@ -92,6 +137,22 @@ export const interviewApi = {
   getProgress: async (interviewId: string) => {
     const { data } = await api.get(`/interviews/${interviewId}/progress`);
     return data;
+  },
+
+  getMonitorActive: async (): Promise<Array<{
+    interview_id: string;
+    candidate_name: string;
+    candidate_email: string;
+    current_pillar: string;
+    question_number: number;
+    status: string;
+  }>> => {
+    const { data } = await api.get('/interviews/monitor/active');
+    return data;
+  },
+
+  terminate: async (interviewId: string): Promise<void> => {
+    await api.post(`/interviews/${interviewId}/terminate`);
   },
 };
 

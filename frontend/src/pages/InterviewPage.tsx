@@ -29,8 +29,8 @@ export default function InterviewPage() {
   const connectWebSocket = useCallback(() => {
     if (!interviewId) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/interviews/ws/${interviewId}`;
+    // Use direct connection to backend (127.0.0.1 to avoid ipv6 localhost issues)
+    const wsUrl = `ws://127.0.0.1:8000/api/interviews/ws/${interviewId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -44,11 +44,16 @@ export default function InterviewPage() {
       handleWSMessage(msg);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      console.warn('WebSocket Closed:', event.code, event.reason);
       setConnected(false);
+      if (event.code !== 1000) {
+        toast.error(`Connection lost (${event.code})`);
+      }
     };
 
-    ws.onerror = () => {
+    ws.onerror = (error) => {
+      console.error('WebSocket Error:', error);
       toast.error('WebSocket connection error');
     };
   }, [interviewId]);
@@ -114,7 +119,11 @@ export default function InterviewPage() {
   }, [timeLeft, phase]);
 
   const startInterview = () => {
-    wsRef.current?.send(JSON.stringify({ type: 'start', data: {} }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'start', data: {} }));
+    } else {
+      toast.error('WebSocket not connected');
+    }
   };
 
   const startRecording = async () => {
@@ -246,8 +255,12 @@ export default function InterviewPage() {
             The AI interviewer will ask questions across multiple technical topics.
             You will have time to read each question before answering.
           </p>
-          <button className="btn-primary text-lg px-8 py-3" onClick={startInterview}>
-            Start Interview
+          <button
+            className="btn-primary text-lg px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={startInterview}
+            disabled={!connected}
+          >
+            {connected ? 'Start Interview' : 'Connecting...'}
           </button>
         </div>
       )}
@@ -255,21 +268,19 @@ export default function InterviewPage() {
       {(phase === 'reading' || phase === 'answering' || phase === 'processing') && currentQuestion && (
         <div className="space-y-6">
           {/* Timer Bar */}
-          <div className={`rounded-xl p-4 flex items-center justify-between ${
-            phase === 'reading' ? 'bg-blue-50 border border-blue-200' :
+          <div className={`rounded-xl p-4 flex items-center justify-between ${phase === 'reading' ? 'bg-blue-50 border border-blue-200' :
             phase === 'answering' ? 'bg-green-50 border border-green-200' :
-            'bg-gray-50 border border-gray-200'
-          }`}>
+              'bg-gray-50 border border-gray-200'
+            }`}>
             <div className="flex items-center gap-3">
               <Clock className="w-5 h-5" />
               <span className="font-medium">
                 {phase === 'reading' ? 'Reading Time' :
-                 phase === 'answering' ? 'Answer Time' : 'Processing...'}
+                  phase === 'answering' ? 'Answer Time' : 'Processing...'}
               </span>
             </div>
-            <span className={`text-2xl font-bold font-mono ${
-              timeLeft <= 10 ? 'text-red-600' : ''
-            }`}>
+            <span className={`text-2xl font-bold font-mono ${timeLeft <= 10 ? 'text-red-600' : ''
+              }`}>
               {formatTime(timeLeft)}
             </span>
           </div>

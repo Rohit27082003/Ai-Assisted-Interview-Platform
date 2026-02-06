@@ -78,7 +78,7 @@ class JobDescription(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
-    candidates = relationship("Candidate", back_populates="job_description")
+    candidates = relationship("Candidate", back_populates="job_description", cascade="all, delete-orphan")
 
 
 # ── Candidates ────────────────────────────────────────────────────
@@ -97,11 +97,15 @@ class Candidate(Base):
     status = Column(SAEnum(CandidateStatus), default=CandidateStatus.UPLOADED)
     focus_areas = Column(JSONB, default=list)
     graph_state = Column(JSONB, default=dict)
+    # Session fields for candidate login
+    session_id = Column(String(64), unique=True, nullable=True, index=True)
+    session_expires_at = Column(DateTime(timezone=True), nullable=True)
+    session_created_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     job_description = relationship("JobDescription", back_populates="candidates")
-    interviews = relationship("Interview", back_populates="candidate")
+    interviews = relationship("Interview", back_populates="candidate", cascade="all, delete-orphan")
 
 
 # ── Interviews ────────────────────────────────────────────────────
@@ -125,9 +129,9 @@ class Interview(Base):
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     candidate = relationship("Candidate", back_populates="interviews")
-    transcripts = relationship("Transcript", back_populates="interview")
-    evaluations = relationship("Evaluation", back_populates="interview")
-    report = relationship("Report", back_populates="interview", uselist=False)
+    transcripts = relationship("Transcript", back_populates="interview", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="interview", cascade="all, delete-orphan")
+    report = relationship("Report", back_populates="interview", uselist=False, cascade="all, delete-orphan")
 
 
 # ── Transcripts ───────────────────────────────────────────────────
@@ -209,3 +213,17 @@ class Report(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     interview = relationship("Interview", back_populates="report")
+
+
+# ── Recruiters ───────────────────────────────────────────────────
+
+class Recruiter(Base):
+    """Recruiter users authenticated via AWS Cognito."""
+    __tablename__ = "recruiters"
+
+    recruiter_id = Column(UUID(as_uuid=True), primary_key=True, default=gen_uuid)
+    cognito_sub = Column(String(255), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=False)
+    name = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

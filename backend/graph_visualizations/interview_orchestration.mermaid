@@ -1,0 +1,28 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__(<p>__start__</p>)
+	select_pillar(select_pillar)
+	generate_question(generate_question)
+	answer_understanding(answer_understanding)
+	followup_generator(followup_generator)
+	shift_pillar(shift_pillar)
+	end_interview(end_interview)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> select_pillar;
+	end_interview --> __end__;
+	followup_generator --> __end__;
+	generate_question --> __end__;
+	select_pillar --> generate_question;
+	answer_understanding -.-> generate_question;
+	answer_understanding -. &nbsp;follow_up&nbsp; .-> followup_generator;
+	answer_understanding -. &nbsp;next_pillar&nbsp; .-> shift_pillar;
+	answer_understanding -.-> end_interview;
+	shift_pillar -.-> select_pillar;
+	shift_pillar -.-> end_interview;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

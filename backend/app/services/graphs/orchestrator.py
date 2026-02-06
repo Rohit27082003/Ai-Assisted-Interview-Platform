@@ -195,7 +195,7 @@ def build_orchestrator_graph() -> StateGraph:
     graph.add_node("evaluation", evaluation_executor)
     graph.add_node("reporting", reporting_executor)
     graph.add_node("complete", complete_node)
-    graph.add_node("error", error_node)
+    graph.add_node("error_handler", error_node)
 
     graph.set_entry_point("router")
 
@@ -210,13 +210,13 @@ def build_orchestrator_graph() -> StateGraph:
             "evaluation": "evaluation",
             "reporting": "reporting",
             "complete": "complete",
-            "error": "error",
+            "error": "error_handler",
         },
     )
 
     # All executors end after running
     for node in ["jd_intelligence", "resume_intelligence", "focus_area",
-                  "interview", "evaluation", "reporting", "complete", "error"]:
+                  "interview", "evaluation", "reporting", "complete", "error_handler"]:
         graph.add_edge(node, END)
 
     return graph.compile()

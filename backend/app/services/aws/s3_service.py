@@ -73,6 +73,23 @@ class S3Service:
         response = self.s3_client.get_object(Bucket=bucket, Key=key)
         return response["Body"].read()
 
+    def generate_presigned_url(self, s3_url: str, expiration: int = 3600) -> str:
+        """Generate a presigned URL to download a file from S3.
+        
+        Args:
+            s3_url: The s3:// URL of the file.
+            expiration: URL expiration time in seconds (default 1 hour).
+        
+        Returns:
+            A presigned HTTPS URL for downloading the file.
+        """
+        bucket, key = self._parse_s3_url(s3_url)
+        return self.s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': key},
+            ExpiresIn=expiration
+        )
+
     @staticmethod
     def _parse_s3_url(url: str) -> tuple:
         path = url.replace("s3://", "")

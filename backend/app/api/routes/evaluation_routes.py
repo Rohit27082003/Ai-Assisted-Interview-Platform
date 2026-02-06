@@ -14,6 +14,7 @@ from app.schemas.schemas import EvaluationResponse, EvaluationItem, ReportRespon
 from app.services.graphs.evaluation import build_evaluation_graph
 from app.services.graphs.reporting import build_reporting_graph
 from app.models.models import JobDescription
+from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedUser
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/api/evaluations", tags=["Evaluations"])
 async def evaluate_interview(
     interview_id: UUID,
     db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Run evaluation graph on a completed interview."""
     interview = await db.get(Interview, interview_id)
@@ -127,6 +129,7 @@ async def evaluate_interview(
 async def generate_report(
     interview_id: UUID,
     db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Generate a recruiter-grade report for a completed and evaluated interview."""
     interview = await db.get(Interview, interview_id)
@@ -258,7 +261,11 @@ async def generate_report(
 
 
 @router.get("/{interview_id}/report", response_model=ReportResponse)
-async def get_report(interview_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_report(
+    interview_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
     """Retrieve an existing report."""
     result = await db.execute(
         select(Report).where(Report.interview_id == interview_id)

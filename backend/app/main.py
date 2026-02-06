@@ -6,7 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.database import init_db
-from app.api.routes import jd_routes, candidate_routes, interview_routes, evaluation_routes
+from app.api.routes import (
+    jd_routes, 
+    candidate_routes, 
+    interview_routes, 
+    evaluation_routes, 
+    auth_routes,
+    candidate_portal_routes,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -39,11 +46,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routes
+# Routes - Authentication
+app.include_router(auth_routes.router)
+
+# Routes - Recruiter Portal
 app.include_router(jd_routes.router)
 app.include_router(candidate_routes.router)
 app.include_router(interview_routes.router)
 app.include_router(evaluation_routes.router)
+
+# Routes - Candidate Portal
+app.include_router(candidate_portal_routes.router)
 
 
 @app.get("/")

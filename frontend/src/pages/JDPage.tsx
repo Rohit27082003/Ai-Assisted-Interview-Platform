@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, FileText, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { jdApi } from '../services/api';
 import type { JobDescription } from '../types';
@@ -44,6 +44,20 @@ export default function JDPage() {
       toast.error('Failed to create job description');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (jdId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (!confirm('Are you sure you want to delete this JD? This will delete all associated candidates.')) return;
+
+    try {
+      await jdApi.delete(jdId);
+      setJDs(jds.filter((jd) => jd.jd_id !== jdId));
+      if (expandedJD === jdId) setExpandedJD(null);
+      toast.success('Job description deleted');
+    } catch {
+      toast.error('Failed to delete job description');
     }
   };
 
@@ -132,11 +146,20 @@ export default function JDPage() {
                       {jd.must_have_skills?.length || 0} required skills
                     </p>
                   </div>
-                  {isExpanded ? (
-                    <ChevronUp className="w-5 h-5 text-gray-400" />
-                  ) : (
-                    <ChevronDown className="w-5 h-5 text-gray-400" />
-                  )}
+                  <div className="flex items-center gap-3">
+                    <button
+                      className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                      onClick={(e) => handleDelete(jd.jd_id, e)}
+                      title="Delete JD"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                    {isExpanded ? (
+                      <ChevronUp className="w-5 h-5 text-gray-400" />
+                    ) : (
+                      <ChevronDown className="w-5 h-5 text-gray-400" />
+                    )}
+                  </div>
                 </div>
 
                 {isExpanded && jd.parsed_data && (

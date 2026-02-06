@@ -3,6 +3,17 @@
 from typing import List
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from pathlib import Path
+from dotenv import load_dotenv
+import os
+
+# Get the backend directory (parent of app/)
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+ENV_FILE = BACKEND_DIR / ".env"
+
+# Explicitly load .env file before pydantic settings tries to
+if ENV_FILE.exists():
+    load_dotenv(dotenv_path=ENV_FILE)
 
 
 class Settings(BaseSettings):
@@ -38,6 +49,14 @@ class Settings(BaseSettings):
     COGNITO_USER_POOL_ID: str = ""
     COGNITO_APP_CLIENT_ID: str = ""
 
+    # Session Settings (for candidate login)
+    SESSION_EXPIRY_HOURS: int = 72  # Session valid for 3 days
+    SESSION_ID_LENGTH: int = 32
+
+    # AWS Transcribe
+    TRANSCRIBE_LANGUAGE_CODE: str = "en-US"
+    TRANSCRIBE_SAMPLE_RATE: int = 16000
+
     # Debug
     DEBUG: bool = True
 
@@ -53,7 +72,7 @@ class Settings(BaseSettings):
         return url
 
     class Config:
-        env_file = ".env"
+        env_file = str(ENV_FILE)
         env_file_encoding = "utf-8"
 
 
