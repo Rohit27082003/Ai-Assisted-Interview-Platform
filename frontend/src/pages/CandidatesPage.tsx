@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Upload, Filter, Play, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2
+  Plus, Upload, Filter, Play, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { candidateApi, jdApi, interviewApi } from '../services/api';
-import type { JobDescription, Candidate, ShortlistResponse } from '../types';
+import type { JobDescription, Candidate, ShortlistResponse, FocusArea } from '../types';
 
 interface CandidateSession {
   candidate_id: string;
@@ -33,6 +33,19 @@ export default function CandidatesPage() {
   const [threshold, setThreshold] = useState(0.65);
   const [showSessions, setShowSessions] = useState(false);
   const [sessions, setSessions] = useState<CandidateSession[]>([]);
+  const [expandedCandidates, setExpandedCandidates] = useState<Set<string>>(new Set());
+
+  const toggleExpandCandidate = (candidateId: string) => {
+    setExpandedCandidates(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(candidateId)) {
+        newSet.delete(candidateId);
+      } else {
+        newSet.add(candidateId);
+      }
+      return newSet;
+    });
+  };
 
   useEffect(() => {
     loadData();
@@ -431,85 +444,151 @@ export default function CandidatesPage() {
             <table className="w-full">
               <thead>
                 <tr className="text-left text-sm text-gray-500 border-b">
+                  <th className="pb-3 font-medium w-8"></th>
                   <th className="pb-3 font-medium">Name</th>
                   <th className="pb-3 font-medium">Email</th>
                   <th className="pb-3 font-medium">Score</th>
                   <th className="pb-3 font-medium">Status</th>
+                  <th className="pb-3 font-medium">Focus Areas</th>
                   <th className="pb-3 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {candidates.map((c) => (
-                  <tr key={c.candidate_id} className="border-b last:border-0">
-                    <td className="py-3 font-medium">{c.name}</td>
-                    <td className="py-3 text-gray-600">{c.email}</td>
-                    <td className="py-3">{(c.shortlist_score * 100).toFixed(0)}%</td>
-                    <td className="py-3">
-                      <span className={statusColorMap[c.status] || 'badge-gray'}>
-                        {c.status}
-                      </span>
-                    </td>
-                    <td className="py-3">
-                      <div className="flex gap-2">
-                        {/* View Resume button */}
-                        <button
-                          className="text-sm btn-secondary flex items-center gap-1"
-                          onClick={async () => {
-                            try {
-                              const result = await candidateApi.getResumeUrl(c.candidate_id);
-                              window.open(result.download_url, '_blank');
-                            } catch {
-                              toast.error('Resume not available');
-                            }
-                          }}
-                          title="View Resume"
-                        >
-                          <FileText className="w-3 h-3" />
-                          Resume
-                        </button>
-                        {c.status === 'shortlisted' && (
-                          <button
-                            className="text-sm btn-secondary flex items-center gap-1"
-                            onClick={() => handleFocusAreas(c.candidate_id)}
-                            disabled={actionLoading[c.candidate_id + '_focus']}
-                          >
-                            <Target className="w-3 h-3" />
-                            {actionLoading[c.candidate_id + '_focus']
-                              ? 'Generating...'
-                              : 'Focus Areas'}
-                          </button>
-                        )}
-                        {/* Interview button removed for recruiters */}
-                        {['interviewed', 'evaluated', 'reported'].includes(c.status) && (
-                          <button
-                            className="text-sm btn-secondary"
-                            onClick={() => navigate(`/report/${c.interview_id}`)}
-                          >
-                            View Report
-                          </button>
-                        )}
-                        {c.interview_id && (
-                          <button
-                            className="text-sm btn-secondary flex items-center gap-1"
-                            onClick={() => navigate(`/transcript/${c.interview_id}`)}
-                            title="View Transcript"
-                          >
-                            <FileText className="w-3 h-3" />
-                            Transcript
-                          </button>
-                        )}
-                        <button
-                          className="text-sm btn-secondary text-red-600 hover:text-red-700 hover:bg-red-50"
-                          onClick={() => handleDeleteCandidate(c.candidate_id)}
-                          disabled={actionLoading[c.candidate_id + '_delete']}
-                          title="Delete Candidate"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {candidates.map((c) => {
+                  const hasFocusAreas = c.focus_areas && c.focus_areas.length > 0;
+                  const isExpanded = expandedCandidates.has(c.candidate_id);
+
+                  return (
+                    <React.Fragment key={c.candidate_id}>
+                      <tr className="border-b last:border-0">
+                        <td className="py-3">
+                          {hasFocusAreas && (
+                            <button
+                              onClick={() => toggleExpandCandidate(c.candidate_id)}
+                              className="p-1 hover:bg-gray-100 rounded"
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4 text-gray-500" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4 text-gray-500" />
+                              )}
+                            </button>
+                          )}
+                        </td>
+                        <td className="py-3 font-medium">{c.name}</td>
+                        <td className="py-3 text-gray-600">{c.email}</td>
+                        <td className="py-3">{(c.shortlist_score * 100).toFixed(0)}%</td>
+                        <td className="py-3">
+                          <span className={statusColorMap[c.status] || 'badge-gray'}>
+                            {c.status}
+                          </span>
+                        </td>
+                        <td className="py-3">
+                          {hasFocusAreas ? (
+                            <button
+                              onClick={() => toggleExpandCandidate(c.candidate_id)}
+                              className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
+                            >
+                              <Eye className="w-3 h-3" />
+                              {c.focus_areas.length} topics
+                            </button>
+                          ) : c.status === 'shortlisted' ? (
+                            <span className="text-xs text-gray-400">Not generated</span>
+                          ) : (
+                            <span className="text-xs text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-3">
+                          <div className="flex gap-2">
+                            {/* View Resume button */}
+                            <button
+                              className="text-sm btn-secondary flex items-center gap-1"
+                              onClick={async () => {
+                                try {
+                                  const result = await candidateApi.getResumeUrl(c.candidate_id);
+                                  window.open(result.download_url, '_blank');
+                                } catch {
+                                  toast.error('Resume not available');
+                                }
+                              }}
+                              title="View Resume"
+                            >
+                              <FileText className="w-3 h-3" />
+                              Resume
+                            </button>
+                            {c.status === 'shortlisted' && (
+                              <button
+                                className="text-sm btn-secondary flex items-center gap-1"
+                                onClick={() => handleFocusAreas(c.candidate_id)}
+                                disabled={actionLoading[c.candidate_id + '_focus']}
+                              >
+                                <Target className="w-3 h-3" />
+                                {actionLoading[c.candidate_id + '_focus']
+                                  ? 'Generating...'
+                                  : 'Focus Areas'}
+                              </button>
+                            )}
+                            {/* Interview button removed for recruiters */}
+                            {['interviewed', 'evaluated', 'reported'].includes(c.status) && (
+                              <button
+                                className="text-sm btn-secondary"
+                                onClick={() => navigate(`/report/${c.interview_id}`)}
+                              >
+                                View Report
+                              </button>
+                            )}
+                            {c.interview_id && (
+                              <button
+                                className="text-sm btn-secondary flex items-center gap-1"
+                                onClick={() => navigate(`/transcript/${c.interview_id}`)}
+                                title="View Transcript"
+                              >
+                                <FileText className="w-3 h-3" />
+                                Transcript
+                              </button>
+                            )}
+                            <button
+                              className="text-sm btn-secondary text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => handleDeleteCandidate(c.candidate_id)}
+                              disabled={actionLoading[c.candidate_id + '_delete']}
+                              title="Delete Candidate"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {/* Expanded Focus Areas Row */}
+                      {hasFocusAreas && isExpanded && (
+                        <tr className="bg-gray-50 dark:bg-gray-800">
+                          <td colSpan={7} className="py-4 px-6">
+                            <div className="ml-8">
+                              <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                                <Target className="w-4 h-4 text-primary-600" />
+                                Interview Focus Areas for {c.name}
+                              </h4>
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                {c.focus_areas.map((fa: FocusArea, idx: number) => (
+                                  <div
+                                    key={idx}
+                                    className="bg-white dark:bg-gray-700 p-3 rounded-lg border border-gray-200 dark:border-gray-600"
+                                  >
+                                    <div className="font-medium text-primary-600 dark:text-primary-400 mb-1">
+                                      {fa.skill}
+                                    </div>
+                                    <p className="text-xs text-gray-600 dark:text-gray-400">
+                                      {fa.reason}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
