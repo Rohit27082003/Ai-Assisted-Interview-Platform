@@ -44,3 +44,6 @@ docker-compose.override.yml
 
 # Chroma
 chroma_data/
+
+# Uploads
+backend/uploads/

@@ -49,6 +49,28 @@ from app.services.realtime.interview_broadcaster import (
     create_pillar_completed_event,
     create_interview_completed_event,
 )
+
+def serialize_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Helper to serialize LangGraph state for JSON storage."""
+    serialized = {}
+    for k, v in state.items():
+        if isinstance(v, list):
+            new_list = []
+            for item in v:
+                if hasattr(item, "model_dump"):
+                    new_list.append(item.model_dump())
+                elif hasattr(item, "dict"):
+                    new_list.append(item.dict())
+                else:
+                    new_list.append(item)
+            serialized[k] = new_list
+        elif hasattr(v, "model_dump"):
+            serialized[k] = v.model_dump()
+        elif hasattr(v, "dict"):
+            serialized[k] = v.dict()
+        else:
+            serialized[k] = v
+    return serialized
 from app.services.aws.transcribe_service import get_transcribe_service
 from app.services.aws.s3_service import get_s3_service
 from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedUser
@@ -62,10 +84,47 @@ router = APIRouter(prefix="/api/interviews", tags=["Interviews"])
 # Active interview sessions (WebSocket connections)
 active_sessions: Dict[str, Dict[str, Any]] = {}
 
+# Pending cleanup tasks for disconnected sessions to allow grace period for refresh
+pending_cleanups: Dict[str, asyncio.Task] = {}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # REST ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def ensure_active_session(
+    interview: Interview,
+    candidate: Candidate,
+    jd: JobDescription,
+):
+    """
+    Ensure the interview session is properly initialized with state.
+    Used by both recruiter start and candidate portal resume.
+    """
+    if not interview.state_json:
+        # Create production-grade initial state
+        initial_state = create_initial_state(
+            interview_id=str(interview.interview_id),
+            candidate_id=str(candidate.candidate_id),
+            jd_id=str(jd.jd_id),
+            candidate_name=candidate.name,
+            candidate_email=candidate.email,
+            job_role=jd.title,
+            job_requirements=jd.parsed_data or {},
+            resume_context=candidate.resume_text or "",
+            focus_areas=candidate.focus_areas or [],
+            config={
+                "reading_buffer_seconds": settings.READING_TIME_SECONDS,
+                "answer_window_seconds": settings.ANSWER_TIME_SECONDS,
+                "max_questions_per_pillar": settings.MAX_QUESTIONS_PER_TOPIC,
+            },
+        )
+        interview.state_json = dict(initial_state)
+
+    if interview.status == InterviewStatus.PENDING:
+        interview.status = InterviewStatus.IN_PROGRESS
+        interview.started_at = datetime.now(timezone.utc)
 
 
 @router.post("/start", response_model=InterviewResponse)
@@ -88,6 +147,10 @@ async def start_interview(
     jd = await db.get(JobDescription, candidate.jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
+        
+    # Verify ownership
+    if jd.recruiter_id != user.recruiter_id:
+        raise HTTPException(status_code=404, detail="Candidate not found")
 
     # Create interview record first to get ID
     interview = Interview(
@@ -140,7 +203,19 @@ async def get_interview(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Get interview details with current state."""
-    interview = await db.get(Interview, interview_id)
+    # Join with Candidate -> JD to verify ownership
+    query = (
+        select(Interview)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Interview.interview_id == interview_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    interview = result.scalar_one_or_none()
+    
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
@@ -181,7 +256,19 @@ async def get_progress(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Get current interview progress for monitoring."""
-    interview = await db.get(Interview, interview_id)
+    # Join with Candidate -> JD to verify ownership
+    query = (
+        select(Interview)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Interview.interview_id == interview_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    interview = result.scalar_one_or_none()
+
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
@@ -220,7 +307,13 @@ async def get_active_interviews(
         return []
 
     result = await db.execute(
-        select(Interview).where(Interview.interview_id.in_(interview_ids))
+        select(Interview)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Interview.interview_id.in_(interview_ids),
+            JobDescription.recruiter_id == user.recruiter_id
+        )
     )
     interviews = result.scalars().all()
 
@@ -260,7 +353,19 @@ async def terminate_interview(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Terminate an interview immediately (recruiter action)."""
-    interview = await db.get(Interview, interview_id)
+    # Join with Candidate -> JD to verify ownership
+    query = (
+        select(Interview)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Interview.interview_id == interview_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    interview = result.scalar_one_or_none()
+
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
@@ -318,6 +423,15 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
     await websocket.accept()
     logger.info(f"WebSocket connected for interview {interview_id}")
 
+    # Cancel any pending cleanup for this interview (user returned)
+    if interview_id in pending_cleanups:
+        logger.info(f"Cancelling pending cleanup for {interview_id} - reconnected")
+        pending_cleanups[interview_id].cancel()
+        pending_cleanups.pop(interview_id, None)
+
+    # Register active session
+    active_sessions[interview_id] = {"websocket": websocket, "connected_at": datetime.now(timezone.utc)}
+
     transcribe_service = get_transcribe_service()
     broadcaster = get_broadcaster()
 
@@ -348,6 +462,64 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
         interview.status = InterviewStatus.IN_PROGRESS
         interview.started_at = interview.started_at or datetime.now(timezone.utc)
         await db.commit()
+
+        # Restore state to client
+        if current_state_snap and current_state_snap.values:
+            state = current_state_snap.values
+            
+            # 1. Build Transcript
+            transcript = []
+            for record in state.get("question_records", []):
+                if record.get("answer_text") or record.get("answer_audio_url"):
+                    transcript.append({
+                        "q": record.get("question_text", ""),
+                        "a": record.get("answer_text") or "(Audio Answer)"
+                    })
+            
+            # 2. Calculate Phase and Time Left
+            current_phase = state.get("phase", "idle")
+            time_left = 0
+            
+            timing = state.get("timing", {})
+            now = datetime.utcnow()
+            
+            if current_phase == "reading" and "reading_deadline" in timing:
+                deadline = datetime.fromisoformat(timing["reading_deadline"])
+                time_left = max(0, int((deadline - now).total_seconds()))
+            elif current_phase == "answering" and "answer_deadline" in timing:
+                deadline = datetime.fromisoformat(timing["answer_deadline"])
+                time_left = max(0, int((deadline - now).total_seconds()))
+                
+            # 3. Current Question Data
+            restore_data = {
+                "transcript": transcript,
+                "phase": current_phase,
+                "time_left": time_left,
+            }
+            
+            if state.get("current_question"):
+                # Reconstruct question object
+                current_idx = state.get("current_pillar_index", 0)
+                focus_areas = state.get("focus_areas", [])
+                pillar_name = "Unknown"
+                if focus_areas and 0 <= current_idx < len(focus_areas):
+                    pillar_name = focus_areas[current_idx].get("skill", "Unknown")
+                    
+                restore_data["question"] = {
+                    "question_text": state.get("current_question"),
+                    "pillar": pillar_name,
+                    "question_number": state.get("total_questions_asked", 1),
+                    "depth_level": state.get("current_question_depth", 1),
+                    "is_follow_up": state.get("follow_ups_in_current_pillar", 0) > 0,
+                    "reading_time_seconds": settings.READING_TIME_SECONDS,
+                    "answer_time_seconds": settings.ANSWER_TIME_SECONDS,
+                }
+
+            logger.info(f"Sending restore_state to {interview_id}: {len(transcript)} items")
+            await websocket.send_json({
+                "type": "restore_state",
+                "data": restore_data
+            })
 
     # Register active session
     active_sessions[interview_id] = {
@@ -416,16 +588,45 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
                     msg.get("data", {}), broadcaster
                 )
 
+            elif msg_type == "request_finish":
+                # Candidate requested to finish interview early
+                logger.info(f"Candidate requested finish for {interview_id}")
+                
+                # Update DB status
+                async with async_session_factory() as db:
+                    interview = await db.get(Interview, UUID(interview_id))
+                    if interview:
+                        interview.status = InterviewStatus.COMPLETED
+                        interview.ended_at = datetime.now(timezone.utc)
+                        await db.commit()
+
+                # Trigger post-interview analysis
+                asyncio.create_task(_run_post_interview_analysis(interview_id))
+                
+                # Send completion message
+                await websocket.send_json({
+                    "type": "complete",
+                    "data": {
+                        "message": "Interview completed by user request",
+                        "reason": "user_completed",
+                    }
+                })
+                break
+
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {interview_id}")
     except Exception as e:
         logger.error(f"WebSocket error for {interview_id}: {e}", exc_info=True)
     finally:
-        # Cleanup
+        # Cleanup session tracking
         active_sessions.pop(interview_id, None)
 
-        # Auto-complete if not finished
-        await _handle_disconnect_cleanup(interview_id, broadcaster)
+        # Schedule delayed cleanup instead of immediate
+        # This allows the user to refresh the page without terminating the interview
+        task = asyncio.create_task(delayed_disconnect_cleanup(interview_id, broadcaster))
+        pending_cleanups[interview_id] = task
+        
+        logger.info(f"WebSocket disconnected for {interview_id}, cleanup scheduled")
 
 
 async def _run_graph_cycle(
@@ -437,7 +638,7 @@ async def _run_graph_cycle(
 ):
     """Run a graph execution cycle and handle events."""
     try:
-        async for event in graph.astream(None, config):
+        async for event in graph.astream(None, config, stream_mode="updates"):
             await _handle_graph_event(
                 event, websocket, interview_id, broadcaster
             )
@@ -462,8 +663,8 @@ async def _handle_graph_event(
     interview_id: str,
     broadcaster,
 ):
-    """Process graph node events and notify clients."""
     for node_name, state_update in event.items():
+        # logger.info(f"Handling graph event from node: {node_name}. Keys: {list(state_update.keys())}")
         if node_name == "question_engine":
             # New question generated
             question = state_update.get("current_question")
@@ -592,7 +793,7 @@ async def _handle_graph_event(
                             else InterviewStatus.TERMINATED
                         )
                         interview.ended_at = datetime.now(timezone.utc)
-                        interview.state_json = state_update
+                        interview.state_json = serialize_state(state_update)
                         await db.commit()
 
                 # Broadcast completion
@@ -667,7 +868,45 @@ async def _handle_answer_complete(
         async with async_session_factory() as db:
             interview = await db.get(Interview, UUID(interview_id))
             if interview:
-                interview.state_json = dict(state_snap.values)
+                interview.state_json = serialize_state(dict(state_snap.values))
+                
+                # Persist Transcript for Analytics/Reporting
+                # We do this here to ensure it's saved even if graph crashes later
+                question_records = state_snap.values.get("question_records", [])
+                if question_records:
+                    last = question_records[-1]
+                    # Only save if we have an answer and it hasn't been saved yet (check question_id?)
+                    # Ideally we should check if transcript exists, but for now we assume 1-to-1 if linear
+                    # We can use update_or_create logic or just append. 
+                    # Let's check if it exists first to avoid duplicates on retries.
+                    
+                    # Check if transcript already exists for this question
+                    existing_transcript = await db.execute(
+                        select(Transcript).where(
+                            Transcript.interview_id == interview.interview_id,
+                            Transcript.question == last.get("question_text") # Using text as proxy if ID mismatch?
+                            # Better to use question_id if available, but question_records might generate new IDs on retry?
+                            # Actually question_records come from state.
+                        )
+                    )
+                    if not existing_transcript.scalars().first():
+                         # Clean up audio url
+                         audio = last.get("answer_audio_url")
+                         if audio and audio.startswith("http"):
+                             pass # usage?
+                         
+                         transcript_entry = Transcript(
+                            interview_id=interview.interview_id,
+                            pillar=last.get("pillar_name", "General"),
+                            question_number=state_snap.values.get("total_questions_asked", 0),
+                            question=last.get("question_text", ""),
+                            answer=last.get("answer_text", "(No answer)"),
+                            audio_url=last.get("answer_audio_url"),
+                            is_follow_up=last.get("is_follow_up", False),
+                            created_at=datetime.now(timezone.utc)
+                         )
+                         db.add(transcript_entry)
+                
                 await db.commit()
 
 
@@ -752,6 +991,25 @@ async def _handle_disconnect_cleanup(interview_id: str, broadcaster):
 
     except Exception as e:
         logger.error(f"Disconnect cleanup failed for {interview_id}: {e}")
+
+
+async def delayed_disconnect_cleanup(interview_id: str, broadcaster, delay: int = 15):
+    """
+    Wait for a grace period before cleaning up a disconnected session.
+    If the user reconnects within the delay, this task should be cancelled.
+    """
+    try:
+        await asyncio.sleep(delay)
+        # Check if user reconnected (is in active_sessions)
+        if interview_id not in active_sessions:
+            logger.info(f"Grace period expired for {interview_id}, performing cleanup")
+            await _handle_disconnect_cleanup(interview_id, broadcaster)
+        else:
+            logger.info(f"User reconnected for {interview_id}, skipping cleanup")
+    except asyncio.CancelledError:
+        logger.info(f"Cleanup cancelled for interview {interview_id} - user reconnected")
+    finally:
+        pending_cleanups.pop(interview_id, None)
 
 
 async def _run_post_interview_analysis(interview_id: str):

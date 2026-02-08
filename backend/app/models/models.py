@@ -78,6 +78,9 @@ class JobDescription(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
+    recruiter_id = Column(UUID(as_uuid=True), ForeignKey("recruiters.recruiter_id"), nullable=True) # Nullable for now, but strictly we enforce it in code
+    
+    recruiter = relationship("Recruiter", back_populates="job_descriptions")
     candidates = relationship("Candidate", back_populates="job_description", cascade="all, delete-orphan")
 
 
@@ -227,3 +230,5 @@ class Recruiter(Base):
     name = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    job_descriptions = relationship("JobDescription", back_populates="recruiter", cascade="all, delete-orphan")
