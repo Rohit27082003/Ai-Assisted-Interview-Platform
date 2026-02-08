@@ -28,8 +28,15 @@ class StructuredFormatter(logging.Formatter):
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(StructuredFormatter())
-        logger.addHandler(handler)
+        # Console Handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(StructuredFormatter())
+        logger.addHandler(console_handler)
+        
+        # File Handler
+        file_handler = logging.FileHandler("backend.log")
+        file_handler.setFormatter(StructuredFormatter())
+        logger.addHandler(file_handler)
+        
         logger.setLevel(logging.DEBUG)
     return logger

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Upload, Filter, Play, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye
+  Plus, Upload, Filter, Play, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye, BarChart2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { candidateApi, jdApi, interviewApi } from '../services/api';
@@ -447,7 +447,7 @@ export default function CandidatesPage() {
                   <th className="pb-3 font-medium w-8"></th>
                   <th className="pb-3 font-medium">Name</th>
                   <th className="pb-3 font-medium">Email</th>
-                  <th className="pb-3 font-medium">Score</th>
+                  <th className="pb-3 font-medium">Match Score</th>
                   <th className="pb-3 font-medium">Status</th>
                   <th className="pb-3 font-medium">Focus Areas</th>
                   <th className="pb-3 font-medium">Actions</th>
@@ -477,7 +477,19 @@ export default function CandidatesPage() {
                         </td>
                         <td className="py-3 font-medium">{c.name}</td>
                         <td className="py-3 text-gray-600">{c.email}</td>
-                        <td className="py-3">{(c.shortlist_score * 100).toFixed(0)}%</td>
+                        <td className="py-3">
+                          <div className="flex flex-col">
+                            <span className="font-bold text-lg">{(c.shortlist_score * 100).toFixed(0)}%</span>
+                            {c.scoring_analysis?.reasoning && (
+                              <span
+                                className="text-xs text-gray-500 mt-1 max-w-[200px] truncate block"
+                                title={c.scoring_analysis.reasoning}
+                              >
+                                {c.scoring_analysis.reasoning}
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="py-3">
                           <span className={statusColorMap[c.status] || 'badge-gray'}>
                             {c.status}
@@ -500,6 +512,16 @@ export default function CandidatesPage() {
                         </td>
                         <td className="py-3">
                           <div className="flex gap-2">
+                            {/* Analysis Button */}
+                            <button
+                              className="text-sm btn-secondary flex items-center gap-1 text-primary-600"
+                              onClick={() => navigate(`/candidate/${c.candidate_id}/analysis`)}
+                              title="View Analysis"
+                            >
+                              <BarChart2 className="w-3 h-3" />
+                              Analysis
+                            </button>
+
                             {/* View Resume button */}
                             <button
                               className="text-sm btn-secondary flex items-center gap-1"

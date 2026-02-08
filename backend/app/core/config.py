@@ -28,10 +28,16 @@ class Settings(BaseSettings):
     CHECKPOINT_DB_URL: str = "postgresql://postgres:postgres@localhost:5432/interview_db"
     POSTGRES_POOL_SIZE: int = 10
     POSTGRES_MAX_OVERFLOW: int = 5
+    
+    # ChromaDB (Vector Store)
+    CHROMA_SERVER_HOST: str = "localhost"
+    CHROMA_SERVER_PORT: int = 8001
+    # Use HTTP client if host is set (non-empty)
+    USE_CHROMA_SERVER: bool = True
 
     # Security
     SECRET_KEY: str = "dev-secret-key-change-in-production"
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:5174"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
     # Interview Config
     RESUME_SHORTLIST_THRESHOLD: float = 0.65

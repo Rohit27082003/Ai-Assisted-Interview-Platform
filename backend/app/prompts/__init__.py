@@ -6,30 +6,72 @@ Prompts are loaded dynamically and can be customized via configuration.
 
 Architecture:
 - All prompts are defined in dedicated files by domain
-- PromptRegistry provides centralized access
+- Prompts are exported as ChatPromptTemplate objects
 - Prompts support variable interpolation via {variable} syntax
-- All prompts are versioned for reproducibility
 
 Usage:
-    from app.prompts import PromptRegistry
-
-    registry = PromptRegistry()
-    prompt = registry.get("question_generation",
-                          pillar="Data Structures",
-                          depth_level=3)
+    from app.prompts import QUESTION_GENERATION_PROMPT
+    
+    chain = QUESTION_GENERATION_PROMPT | llm
+    result = await chain.ainvoke({...})
 """
 
-from .registry import PromptRegistry, PromptTemplate
-from .interview_prompts import INTERVIEW_PROMPTS
-from .analysis_prompts import ANALYSIS_PROMPTS
-from .evaluation_prompts import EVALUATION_PROMPTS
-from .reporting_prompts import REPORTING_PROMPTS
+from .interview_prompts import (
+    QUESTION_GENERATION_PROMPT,
+    FOLLOW_UP_QUESTION_PROMPT,
+    FOLLOW_UP_DECISION_PROMPT,
+    PILLAR_TRANSITION_PROMPT,
+    INTERVIEW_INTRODUCTION_PROMPT,
+    INTERVIEW_CONCLUSION_PROMPT,
+)
+
+from .analysis_prompts import (
+    ANSWER_ANALYSIS_PROMPT,
+    CHEATING_DETECTION_PROMPT,
+    CHEATING_ESCALATION_PROMPT,
+    QUICK_RELEVANCE_CHECK_PROMPT,
+)
+
+from .evaluation_prompts import (
+    REFERENCE_ANSWER_PROMPT,
+    RUBRIC_SCORING_PROMPT,
+    EVALUATION_AGGREGATE_PROMPT,
+    BATCH_REFERENCE_GENERATION_PROMPT,
+)
+
+from .reporting_prompts import (
+    PERFORMANCE_ANALYSIS_PROMPT,
+    HIRING_RECOMMENDATION_PROMPT,
+    EXECUTIVE_SUMMARY_PROMPT,
+    PILLAR_FEEDBACK_PROMPT,
+    COMPILE_FINAL_REPORT_PROMPT,
+)
 
 __all__ = [
-    "PromptRegistry",
-    "PromptTemplate",
-    "INTERVIEW_PROMPTS",
-    "ANALYSIS_PROMPTS",
-    "EVALUATION_PROMPTS",
-    "REPORTING_PROMPTS",
+    # Interview
+    "QUESTION_GENERATION_PROMPT",
+    "FOLLOW_UP_QUESTION_PROMPT",
+    "FOLLOW_UP_DECISION_PROMPT",
+    "PILLAR_TRANSITION_PROMPT",
+    "INTERVIEW_INTRODUCTION_PROMPT",
+    "INTERVIEW_CONCLUSION_PROMPT",
+    
+    # Analysis
+    "ANSWER_ANALYSIS_PROMPT",
+    "CHEATING_DETECTION_PROMPT",
+    "CHEATING_ESCALATION_PROMPT",
+    "QUICK_RELEVANCE_CHECK_PROMPT",
+    
+    # Evaluation
+    "REFERENCE_ANSWER_PROMPT",
+    "RUBRIC_SCORING_PROMPT",
+    "EVALUATION_AGGREGATE_PROMPT",
+    "BATCH_REFERENCE_GENERATION_PROMPT",
+    
+    # Reporting
+    "PERFORMANCE_ANALYSIS_PROMPT",
+    "HIRING_RECOMMENDATION_PROMPT",
+    "EXECUTIVE_SUMMARY_PROMPT",
+    "PILLAR_FEEDBACK_PROMPT",
+    "COMPILE_FINAL_REPORT_PROMPT",
 ]

@@ -47,9 +47,9 @@ async def create_candidate(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Register a new candidate."""
-    # Verify JD exists
+    # Verify JD exists and belongs to recruiter
     jd = await db.get(JobDescription, request.jd_id)
-    if not jd:
+    if not jd or jd.recruiter_id != user.recruiter_id:
         raise HTTPException(status_code=404, detail="Job description not found")
 
     candidate = Candidate(
@@ -184,6 +184,10 @@ async def shortlist_candidates(
     jd = await db.get(JobDescription, jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
+    
+    # Verify ownership
+    if jd.recruiter_id != user.recruiter_id:
+        raise HTTPException(status_code=404, detail="Job description not found")
 
     # Get all parsed candidates
     result = await db.execute(
@@ -219,7 +223,9 @@ async def shortlist_candidates(
             "tooling_score": 0.0,
             "final_score": 0.0,
             "recommended": False,
+            "recommended": False,
             "scoring_details": {},
+            "threshold": threshold,  # Pass user/default threshold to graph
         })
 
         score = graph_result.get("final_score", 0.0)
@@ -228,10 +234,19 @@ async def shortlist_candidates(
 
         # Update candidate
         candidate.shortlist_score = score
+        candidate.graph_state = {
+            "scoring_details": graph_result.get("scoring_details", {}),
+            "vector_score": graph_result.get("vector_score", 0.0),
+        }
         candidate.status = (
             CandidateStatus.SHORTLISTED if recommended
             else CandidateStatus.REJECTED
         )
+
+        # Clear session if rejected (security best practice)
+        if not recommended:
+            candidate.session_id = None
+            candidate.session_expires_at = None
 
         result_item = ShortlistResult(
             candidate_id=candidate.candidate_id,
@@ -285,6 +300,10 @@ async def generate_focus_areas(
     jd = await db.get(JobDescription, candidate.jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
+        
+    # Verify ownership
+    if jd.recruiter_id != user.recruiter_id:
+        raise HTTPException(status_code=404, detail="Candidate not found")
 
     # Run Focus Area Graph
     graph = build_focus_area_graph()
@@ -327,6 +346,10 @@ async def rerun_shortlist(
     jd = await db.get(JobDescription, jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
+    
+    # Verify ownership
+    if jd.recruiter_id != user.recruiter_id:
+        raise HTTPException(status_code=404, detail="Job description not found")
 
     # Reset shortlisted/rejected candidates to PARSED (but don't touch candidates in interview)
     result = await db.execute(
@@ -347,18 +370,44 @@ async def rerun_shortlist(
     rejected = []
 
     for candidate in candidates:
-        # Use existing score if available (skip re-running the graph)
-        score = candidate.shortlist_score or 0.0
-        
-        # Apply new threshold
-        recommended = score >= threshold
+        if not candidate.resume_text:
+            continue
 
-        # Update status based on new threshold
+        # Re-run Resume Intelligence Graph with new threshold
+        # This re-analyzes the resume against the JD with the updated threshold
+        graph = build_resume_intelligence_graph()
+        graph_result = await graph.ainvoke({
+            "candidate_id": str(candidate.candidate_id),
+            "jd_id": str(jd_id),
+            "resume_text": candidate.resume_text,
+            "jd_object": jd.parsed_data or {},
+            "chunks": [],
+            "chunk_metadata": [],
+            "skills_score": 0.0,
+            "projects_score": 0.0,
+            "experience_score": 0.0,
+            "tooling_score": 0.0,
+            "final_score": 0.0,
+            "recommended": False,
+            "scoring_details": {},
+            "threshold": threshold,  # Pass result threshold to graph
+        })
+
+        score = graph_result.get("final_score", 0.0)
+        recommended = graph_result.get("recommended", False)
+
+        # Update candidate
+        candidate.shortlist_score = score
+        candidate.graph_state = {
+            "scoring_details": graph_result.get("scoring_details", {}),
+            "vector_score": graph_result.get("vector_score", 0.0),
+        }
         candidate.status = (
             CandidateStatus.SHORTLISTED if recommended
             else CandidateStatus.REJECTED
         )
-        # Clear session if moving back to rejected
+        
+        # Clear session if rejected (security best practice)
         if not recommended:
             candidate.session_id = None
             candidate.session_expires_at = None
@@ -368,7 +417,12 @@ async def rerun_shortlist(
             name=candidate.name,
             email=candidate.email,
             shortlist_score=score,
+            skills_match=graph_result.get("skills_score", 0),
+            projects_match=graph_result.get("projects_score", 0),
+            experience_match=graph_result.get("experience_score", 0),
+            tooling_match=graph_result.get("tooling_score", 0),
             recommended=recommended,
+            reasoning=graph_result.get("scoring_details", {}).get("reasoning"),
         )
 
         if recommended:
@@ -409,6 +463,10 @@ async def generate_candidate_sessions(
     # Get JD
     jd = await db.get(JobDescription, jd_id)
     if not jd:
+        raise HTTPException(status_code=404, detail="Job description not found")
+    
+    # Verify ownership
+    if jd.recruiter_id != user.recruiter_id:
         raise HTTPException(status_code=404, detail="Job description not found")
 
     # Get shortlisted candidates without existing sessions
@@ -463,10 +521,19 @@ async def list_candidates(
     db: AsyncSession = Depends(get_db),
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
-    """List candidates, optionally filtered by JD."""
-    query = select(Candidate).options(selectinload(Candidate.interviews)).order_by(Candidate.created_at.desc())
+    """List candidates, optionally filtered by JD, strictly filtered by recruiter."""
+    # Join with JobDescription to filter by recruiter_id
+    query = (
+        select(Candidate)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(JobDescription.recruiter_id == user.recruiter_id)
+        .options(selectinload(Candidate.interviews))
+        .order_by(Candidate.created_at.desc())
+    )
+    
     if jd_id:
         query = query.where(Candidate.jd_id == jd_id)
+        
     result = await db.execute(query)
     candidates = result.scalars().all()
     
@@ -476,6 +543,10 @@ async def list_candidates(
             #Sort by created_at desc to get latest
             latest = sorted(c.interviews, key=lambda i: i.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
             c.interview_id = latest.interview_id
+        
+        # Map graph_state to scoring_analysis
+        if c.graph_state and "scoring_details" in c.graph_state:
+            c.scoring_analysis = c.graph_state["scoring_details"]
             
     return candidates
 
@@ -487,9 +558,25 @@ async def get_candidate(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Get a specific candidate."""
-    candidate = await db.get(Candidate, candidate_id)
+    # Join with JD to check ownership
+    query = (
+        select(Candidate)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Candidate.candidate_id == candidate_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    candidate = result.scalar_one_or_none()
+    
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
+        
+    # Map graph_state to scoring_analysis for single candidate get
+    if candidate.graph_state and "scoring_details" in candidate.graph_state:
+        candidate.scoring_analysis = candidate.graph_state["scoring_details"]
+        
     return candidate
 
 
@@ -500,7 +587,18 @@ async def delete_candidate(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Delete a candidate."""
-    candidate = await db.get(Candidate, candidate_id)
+    # Verify ownership before delete
+    query = (
+        select(Candidate)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Candidate.candidate_id == candidate_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    candidate = result.scalar_one_or_none()
+    
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     

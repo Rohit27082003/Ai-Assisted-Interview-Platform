@@ -1,9 +1,6 @@
 -- AI Interview Orchestrator - PostgreSQL Schema
 -- Run this to initialize the database
 
-CREATE DATABASE interview_db;
-\c interview_db;
-
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -26,6 +23,16 @@ CREATE TYPE recommendation_type AS ENUM (
     'hire', 'no_hire', 'borderline'
 );
 
+-- Recruiters
+CREATE TABLE recruiters (
+    recruiter_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    cognito_sub VARCHAR(255) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    name VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Job Descriptions
 CREATE TABLE job_descriptions (
     jd_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -38,6 +45,7 @@ CREATE TABLE job_descriptions (
     tools JSONB DEFAULT '[]'::jsonb,
     competencies JSONB DEFAULT '[]'::jsonb,
     chroma_collection_id VARCHAR(255),
+    recruiter_id UUID REFERENCES recruiters(recruiter_id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -55,6 +63,9 @@ CREATE TABLE candidates (
     status candidate_status DEFAULT 'uploaded',
     focus_areas JSONB DEFAULT '[]'::jsonb,
     graph_state JSONB DEFAULT '{}'::jsonb,
+    session_id VARCHAR(64) UNIQUE,
+    session_expires_at TIMESTAMPTZ,
+    session_created_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -136,3 +147,6 @@ CREATE INDEX idx_interviews_status ON interviews(status);
 CREATE INDEX idx_transcripts_interview_id ON transcripts(interview_id);
 CREATE INDEX idx_evaluations_interview_id ON evaluations(interview_id);
 CREATE INDEX idx_reports_interview_id ON reports(interview_id);
+CREATE INDEX idx_recruiters_cognito_sub ON recruiters(cognito_sub);
+CREATE INDEX idx_recruiters_email ON recruiters(email);
+CREATE INDEX idx_job_descriptions_recruiter_id ON job_descriptions(recruiter_id);

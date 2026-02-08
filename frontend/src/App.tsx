@@ -16,6 +16,7 @@ import SignupPage from './pages/SignupPage';
 import ConfirmSignupPage from './pages/ConfirmSignupPage';
 import LiveMonitorPage from './pages/LiveMonitorPage';
 import TranscriptPage from './pages/TranscriptPage';
+import ResumeAnalysisPage from './pages/ResumeAnalysisPage';
 
 // Candidate Pages
 import CandidateLoginPage from './pages/candidate/CandidateLoginPage';
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/monitor" element={<LiveMonitorPage />} />
             <Route path="/transcript/:interviewId" element={<TranscriptPage />} />
             <Route path="/report/:interviewId" element={<ReportPage />} />
+            <Route path="/candidate/:candidateId/analysis" element={<ResumeAnalysisPage />} />
           </Route>
         </Route>
       </Routes>

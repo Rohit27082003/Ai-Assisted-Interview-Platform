@@ -5,26 +5,15 @@ These prompts are used by the question_engine node to generate
 interview questions and decide on follow-ups.
 """
 
-from .registry import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 
-INTERVIEW_PROMPTS = [
-    # ═══════════════════════════════════════════════════════════════════════════
-    # QUESTION GENERATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="question_generation",
-        version="2.0.0",
-        description="Generate an interview question for a specific pillar and depth",
-        required_vars=["pillar_name", "pillar_reason", "depth_level", "job_role"],
-        optional_vars={
-            "resume_context": "",
-            "conversation_context": "",
-            "previous_topics_covered": "",
-            "avoid_concepts": "",
-        },
-        output_schema="QuestionGenerationOutput",
-        template="""You are an expert technical interviewer conducting a structured interview.
+# ═══════════════════════════════════════════════════════════════════════════
+# QUESTION GENERATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+QUESTION_GENERATION_PROMPT = ChatPromptTemplate.from_template(
+    """You are an expert technical interviewer conducting a structured interview.
 
 ROLE CONTEXT:
 - Job Role: {job_role}
@@ -68,27 +57,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "expected_coverage": ["Key point 1", "Key point 2", "Key point 3"],
     "time_estimate_seconds": 45,
     "probing_intent": "What this question reveals about the candidate"
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # FOLLOW-UP QUESTION GENERATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="follow_up_question",
-        version="2.0.0",
-        description="Generate a follow-up question based on a previous answer",
-        required_vars=[
-            "original_question",
-            "candidate_answer",
-            "probe_area",
-            "pillar_name",
-        ],
-        optional_vars={
-            "follow_up_reason": "",
-            "gaps_identified": "",
-        },
-        output_schema="FollowUpQuestionOutput",
-        template="""You are conducting a technical interview follow-up.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FOLLOW-UP QUESTION GENERATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+FOLLOW_UP_QUESTION_PROMPT = ChatPromptTemplate.from_template(
+    """You are conducting a technical interview follow-up.
 
 ORIGINAL QUESTION:
 {original_question}
@@ -115,22 +93,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "builds_on": "What part of their answer this builds on",
     "gap_addressed": "What gap or unclear point this addresses",
     "expected_elaboration": ["Point they should elaborate on 1", "Point 2"]
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # FOLLOW-UP DECISION (OPTIONAL LLM ASSIST)
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="follow_up_decision",
-        version="2.0.0",
-        description="Decide whether a follow-up question is needed (LLM-assisted)",
-        required_vars=["question", "answer", "analysis_signals"],
-        optional_vars={
-            "follow_ups_remaining": "2",
-            "pillar_questions_remaining": "3",
-        },
-        output_schema="FollowUpDecisionOutput",
-        template="""Analyze whether a follow-up question is warranted.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FOLLOW-UP DECISION (OPTIONAL LLM ASSIST)
+# ═══════════════════════════════════════════════════════════════════════════
+
+FOLLOW_UP_DECISION_PROMPT = ChatPromptTemplate.from_template(
+    """Analyze whether a follow-up question is warranted.
 
 QUESTION ASKED:
 {question}
@@ -159,20 +131,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "follow_up_type": "clarification|deeper_probe|alternative_angle|verification|null",
     "confidence": 0.0-1.0,
     "follow_up_focus": "What to focus on if following up, or null"
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # PILLAR TRANSITION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="pillar_transition",
-        version="1.0.0",
-        description="Generate a smooth transition message between pillars",
-        required_vars=["previous_pillar", "next_pillar", "candidate_name"],
-        optional_vars={
-            "previous_performance_summary": "You did well in the previous section.",
-        },
-        template="""Generate a brief, professional transition message.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PILLAR TRANSITION
+# ═══════════════════════════════════════════════════════════════════════════
+
+PILLAR_TRANSITION_PROMPT = ChatPromptTemplate.from_template(
+    """Generate a brief, professional transition message.
 
 PREVIOUS TOPIC: {previous_pillar}
 NEXT TOPIC: {next_pillar}
@@ -185,20 +153,16 @@ Generate a 1-2 sentence transition that:
 3. Keeps the candidate engaged
 4. Does NOT reveal scores or detailed feedback
 
-OUTPUT FORMAT (plain text, no JSON):""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # INTERVIEW INTRODUCTION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="interview_introduction",
-        version="1.0.0",
-        description="Generate the interview introduction message",
-        required_vars=["candidate_name", "job_role", "total_pillars", "time_estimate"],
-        optional_vars={
-            "company_name": "our company",
-        },
-        template="""Generate a professional interview introduction.
+OUTPUT FORMAT (plain text, no JSON):"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERVIEW INTRODUCTION
+# ═══════════════════════════════════════════════════════════════════════════
+
+INTERVIEW_INTRODUCTION_PROMPT = ChatPromptTemplate.from_template(
+    """Generate a professional interview introduction.
 
 CANDIDATE: {candidate_name}
 ROLE: {job_role}
@@ -211,20 +175,16 @@ Generate a brief, welcoming introduction that:
 3. Sets expectations (no right/wrong, think out loud)
 4. Encourages them to ask for clarification if needed
 
-OUTPUT FORMAT (plain text, no JSON):""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # INTERVIEW CONCLUSION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="interview_conclusion",
-        version="1.0.0",
-        description="Generate the interview conclusion message",
-        required_vars=["candidate_name", "completion_status"],
-        optional_vars={
-            "next_steps": "We will be in touch with next steps.",
-        },
-        template="""Generate a professional interview conclusion.
+OUTPUT FORMAT (plain text, no JSON):"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERVIEW CONCLUSION
+# ═══════════════════════════════════════════════════════════════════════════
+
+INTERVIEW_CONCLUSION_PROMPT = ChatPromptTemplate.from_template(
+    """Generate a professional interview conclusion.
 
 CANDIDATE: {candidate_name}
 STATUS: {completion_status}
@@ -235,6 +195,5 @@ Generate a brief conclusion that:
 3. Mentions next steps appropriately
 4. Maintains professionalism regardless of performance
 
-OUTPUT FORMAT (plain text, no JSON):""",
-    ),
-]
+OUTPUT FORMAT (plain text, no JSON):"""
+)

@@ -51,6 +51,7 @@ async def create_jd(
         experience_range=jd_obj.get("experience_range", ""),
         tools=jd_obj.get("tools", []),
         competencies=jd_obj.get("competencies", []),
+        recruiter_id=user.recruiter_id,  # Link to authenticated recruiter
     )
     db.add(jd)
     await db.flush()
@@ -74,9 +75,11 @@ async def list_jds(
     db: AsyncSession = Depends(get_db),
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
-    """List all job descriptions."""
+    """List all job descriptions for the authenticated user."""
     result = await db.execute(
-        select(JobDescription).order_by(JobDescription.created_at.desc())
+        select(JobDescription)
+        .where(JobDescription.recruiter_id == user.recruiter_id)
+        .order_by(JobDescription.created_at.desc())
     )
     return result.scalars().all()
 
@@ -91,6 +94,11 @@ async def get_jd(
     jd = await db.get(JobDescription, jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
+    
+    # Enforce ownership
+    if jd.recruiter_id != user.recruiter_id:
+        raise HTTPException(status_code=404, detail="Job description not found")  # Return 404 to avoid leaking existence
+        
     return jd
 
 @router.delete("/{jd_id}", status_code=204)
@@ -102,6 +110,10 @@ async def delete_jd(
     """Delete a job description and all associated candidates."""
     jd = await db.get(JobDescription, jd_id)
     if not jd:
+        raise HTTPException(status_code=404, detail="Job description not found")
+
+    # Enforce ownership
+    if jd.recruiter_id != user.recruiter_id:
         raise HTTPException(status_code=404, detail="Job description not found")
 
     await db.delete(jd)

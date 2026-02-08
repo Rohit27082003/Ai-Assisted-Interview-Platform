@@ -41,7 +41,13 @@ async def get_db() -> AsyncSession:
             await session.close()
 
 
+from sqlalchemy import text
+
 async def init_db():
     """Create all tables."""
+    # Import models to ensure they are registered with Base.metadata
+    from app.models import models  # noqa: F401
+
     async with engine.begin() as conn:
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
         await conn.run_sync(Base.metadata.create_all)

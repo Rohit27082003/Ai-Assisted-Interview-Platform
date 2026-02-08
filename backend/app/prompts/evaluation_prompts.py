@@ -5,24 +5,15 @@ These prompts are used after the interview completes to generate
 reference answers, score responses, and aggregate results.
 """
 
-from .registry import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 
-EVALUATION_PROMPTS = [
-    # ═══════════════════════════════════════════════════════════════════════════
-    # REFERENCE ANSWER GENERATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="reference_answer",
-        version="2.0.0",
-        description="Generate a reference answer for objective scoring",
-        required_vars=["question", "pillar_name", "job_role"],
-        optional_vars={
-            "depth_level": "3",
-            "time_constraint": "45 seconds",
-        },
-        output_schema="ReferenceAnswerOutput",
-        template="""Generate a reference answer that a strong candidate would give.
+# ═══════════════════════════════════════════════════════════════════════════
+# REFERENCE ANSWER GENERATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+REFERENCE_ANSWER_PROMPT = ChatPromptTemplate.from_template(
+    """Generate a reference answer that a strong candidate would give.
 
 QUESTION:
 {question}
@@ -52,27 +43,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "advanced_points": ["Advanced point showing expertise"],
     "common_mistakes": ["Common mistake 1", "Misconception to watch for"],
     "difficulty_assessment": "basic|intermediate|advanced|expert"
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # RUBRIC SCORING
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="rubric_scoring",
-        version="2.0.0",
-        description="Score a candidate answer against reference using rubric",
-        required_vars=[
-            "question",
-            "candidate_answer",
-            "reference_answer",
-            "key_points",
-        ],
-        optional_vars={
-            "advanced_points": "[]",
-            "common_mistakes": "[]",
-        },
-        output_schema="RubricScoringOutput",
-        template="""Score this candidate answer against the reference using a structured rubric.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RUBRIC SCORING
+# ═══════════════════════════════════════════════════════════════════════════
+
+RUBRIC_SCORING_PROMPT = ChatPromptTemplate.from_template(
+    """Score this candidate answer against the reference using a structured rubric.
 
 QUESTION:
 {question}
@@ -150,22 +130,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "improvement_areas": ["area1", "area2"],
     "coverage_percentage": 0.0-100.0,
     "advanced_points_hit": 0
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # EVALUATION AGGREGATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="evaluation_aggregate",
-        version="1.0.0",
-        description="Aggregate individual scores into interview-level metrics",
-        required_vars=["individual_scores", "pillar_names", "total_questions"],
-        optional_vars={
-            "cheating_flags": "[]",
-            "weights": "equal",
-        },
-        output_schema="EvaluationAggregateOutput",
-        template="""Aggregate individual question scores into overall metrics.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EVALUATION AGGREGATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+EVALUATION_AGGREGATE_PROMPT = ChatPromptTemplate.from_template(
+    """Aggregate individual question scores into overall metrics.
 
 INDIVIDUAL SCORES:
 {individual_scores}
@@ -212,20 +186,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "improvement_trajectory": "improving|declining|stable|inconsistent",
     "cheating_deductions": 0.0,
     "adjusted_score": 0.0-100.0
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # BATCH REFERENCE GENERATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="batch_reference_generation",
-        version="1.0.0",
-        description="Generate reference answers for multiple questions efficiently",
-        required_vars=["questions_json", "job_role"],
-        optional_vars={
-            "job_requirements": "{}",
-        },
-        template="""Generate reference answers for these interview questions.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BATCH REFERENCE GENERATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+BATCH_REFERENCE_GENERATION_PROMPT = ChatPromptTemplate.from_template(
+    """Generate reference answers for these interview questions.
 
 JOB ROLE: {job_role}
 JOB REQUIREMENTS: {job_requirements}
@@ -247,6 +217,5 @@ OUTPUT FORMAT (JSON array, no markdown):
         "difficulty_assessment": "basic|intermediate|advanced|expert"
     }},
     ...
-]""",
-    ),
-]
+]"""
+)

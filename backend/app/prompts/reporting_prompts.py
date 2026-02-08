@@ -5,24 +5,15 @@ These prompts are used to generate comprehensive interview reports
 including performance analysis, recommendations, and executive summaries.
 """
 
-from .registry import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 
-REPORTING_PROMPTS = [
-    # ═══════════════════════════════════════════════════════════════════════════
-    # PERFORMANCE ANALYSIS
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="performance_analysis",
-        version="2.0.0",
-        description="Analyze overall performance to identify strengths and weaknesses",
-        required_vars=["evaluations_json", "pillar_scores", "job_role"],
-        optional_vars={
-            "job_requirements": "{}",
-            "cheating_flags": "[]",
-        },
-        output_schema="PerformanceAnalysisOutput",
-        template="""Analyze this candidate's interview performance comprehensively.
+# ═══════════════════════════════════════════════════════════════════════════
+# PERFORMANCE ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════
+
+PERFORMANCE_ANALYSIS_PROMPT = ChatPromptTemplate.from_template(
+    """Analyze this candidate's interview performance comprehensively.
 
 JOB ROLE: {job_role}
 JOB REQUIREMENTS: {job_requirements}
@@ -77,27 +68,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "problem_solving_approach": "systematic|intuitive|scattered|methodical",
     "integrity_concerns": true|false,
     "integrity_notes": "Explanation if concerns exist, else null"
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # HIRING RECOMMENDATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="hiring_recommendation",
-        version="2.0.0",
-        description="Generate a hiring recommendation with rationale",
-        required_vars=[
-            "performance_analysis",
-            "overall_score",
-            "job_role",
-            "job_requirements",
-        ],
-        optional_vars={
-            "cheating_assessment": "clean",
-            "team_context": "",
-        },
-        output_schema="RecommendationOutput",
-        template="""Generate a hiring recommendation based on interview performance.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HIRING RECOMMENDATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+HIRING_RECOMMENDATION_PROMPT = ChatPromptTemplate.from_template(
+    """Generate a hiring recommendation based on interview performance.
 
 JOB ROLE: {job_role}
 JOB REQUIREMENTS: {job_requirements}
@@ -153,28 +133,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "growth_potential": "high|moderate|limited",
     "suggested_level": "junior|mid|senior|staff|null",
     "conditional_factors": ["Factor that might change recommendation"]
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # EXECUTIVE SUMMARY
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="executive_summary",
-        version="1.0.0",
-        description="Generate an executive summary for hiring managers",
-        required_vars=[
-            "candidate_name",
-            "job_role",
-            "recommendation",
-            "strengths",
-            "weaknesses",
-            "overall_score",
-        ],
-        optional_vars={
-            "interview_duration": "45 minutes",
-            "pillars_covered": "4",
-        },
-        template="""Write an executive summary for a hiring manager.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EXECUTIVE SUMMARY
+# ═══════════════════════════════════════════════════════════════════════════
+
+EXECUTIVE_SUMMARY_PROMPT = ChatPromptTemplate.from_template(
+    """Write an executive summary for a hiring manager.
 
 CANDIDATE: {candidate_name}
 ROLE: {job_role}
@@ -202,20 +170,16 @@ TONE:
 - Actionable for the hiring manager
 - Neither overselling nor underselling
 
-OUTPUT FORMAT (plain text, 200-400 words):""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # DETAILED FEEDBACK BY PILLAR
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="pillar_feedback",
-        version="1.0.0",
-        description="Generate detailed feedback for a specific pillar",
-        required_vars=["pillar_name", "pillar_score", "questions_and_answers"],
-        optional_vars={
-            "job_requirements_for_pillar": "",
-        },
-        template="""Generate detailed feedback for this interview topic.
+OUTPUT FORMAT (plain text, 200-400 words):"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DETAILED FEEDBACK BY PILLAR
+# ═══════════════════════════════════════════════════════════════════════════
+
+PILLAR_FEEDBACK_PROMPT = ChatPromptTemplate.from_template(
+    """Generate detailed feedback for this interview topic.
 
 TOPIC/PILLAR: {pillar_name}
 PILLAR SCORE: {pillar_score}/100
@@ -232,36 +196,16 @@ Provide detailed feedback including:
 4. How this relates to job requirements
 5. Development recommendations if hired
 
-OUTPUT FORMAT (2-3 paragraphs, 150-250 words):""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # FINAL REPORT COMPILATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="compile_final_report",
-        version="1.0.0",
-        description="Compile all analysis into final structured report",
-        required_vars=[
-            "candidate_name",
-            "job_title",
-            "interview_date",
-            "interview_duration",
-            "overall_score",
-            "recommendation",
-            "pillar_scores",
-            "strengths",
-            "weaknesses",
-            "executive_summary",
-            "detailed_feedback",
-        ],
-        optional_vars={
-            "cheating_flags": "[]",
-            "questions_asked": "15",
-            "follow_ups_asked": "5",
-            "completion_status": "completed",
-        },
-        output_schema="FinalReportOutput",
-        template="""Compile the final interview report from all analysis components.
+OUTPUT FORMAT (2-3 paragraphs, 150-250 words):"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FINAL REPORT COMPILATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+COMPILE_FINAL_REPORT_PROMPT = ChatPromptTemplate.from_template(
+    """Compile the final interview report from all analysis components.
 
 CANDIDATE: {candidate_name}
 JOB TITLE: {job_title}
@@ -319,6 +263,5 @@ OUTPUT FORMAT (JSON only, no markdown):
     "pillars_covered": <count>,
     "completion_status": "{completion_status}",
     "suggested_next_steps": ["step1", "step2"]
-}}""",
-    ),
-]
+}}"""
+)

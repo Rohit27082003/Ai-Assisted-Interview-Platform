@@ -57,6 +57,7 @@ class CandidateResponse(BaseModel):
     status: str
     focus_areas: List[FocusArea] = Field(default_factory=list)
     interview_id: Optional[UUID] = None
+    scoring_analysis: Optional[Dict[str, Any]] = None
     created_at: datetime
 
     class Config:
@@ -73,6 +74,7 @@ class ShortlistResult(BaseModel):
     experience_match: float = 0.0
     tooling_match: float = 0.0
     recommended: bool = False
+    reasoning: Optional[str] = None
 
 
 class ShortlistResponse(BaseModel):

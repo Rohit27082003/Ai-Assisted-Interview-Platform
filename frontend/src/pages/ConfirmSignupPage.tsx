@@ -14,6 +14,7 @@ export default function ConfirmSignupPage() {
 
     // Get email from location state (passed from signup)
     useEffect(() => {
+        console.log('Location State:', location.state); // DEBUG: Check if email is passed
         const stateEmail = (location.state as { email?: string })?.email;
         if (stateEmail) {
             setEmail(stateEmail);

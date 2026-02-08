@@ -18,17 +18,23 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis (for queues and caching)
-  redis:
-    image: redis:7-alpine
-    container_name: interview-redis
+  # ChromaDB (Vector Store)
+  chroma:
+    image: chromadb/chroma:0.5.23
+    container_name: interview-chroma
     ports:
-      - "6379:6379"
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - CHROMA_SERVER_NOAUTH_CREDENTIALS=TRUE
+      - IS_PERSISTENT=TRUE
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 10s
       retries: 5
 
 volumes:
   postgres_data:
+  chroma_data:

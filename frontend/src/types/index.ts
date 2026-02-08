@@ -30,6 +30,15 @@ export interface Candidate {
   focus_areas: FocusArea[];
   created_at: string;
   interview_id?: string;
+  scoring_analysis?: {
+    skills_score: number;
+    projects_score: number;
+    experience_score: number;
+    tooling_score: number;
+    vector_score: number;
+    final_score: number;
+    reasoning?: string;
+  };
 }
 
 export interface FocusArea {
@@ -47,6 +56,7 @@ export interface ShortlistResult {
   experience_match: number;
   tooling_match: number;
   recommended: boolean;
+  reasoning?: string;
 }
 
 export interface ShortlistResponse {
@@ -76,7 +86,7 @@ export interface InterviewQuestion {
 }
 
 export interface WSMessage {
-  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error' | 'terminated';
+  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error' | 'terminated' | 'restore_state';
   data: Record<string, any>;
 }
 

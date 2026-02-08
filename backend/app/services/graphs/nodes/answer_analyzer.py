@@ -29,7 +29,10 @@ from app.schemas.outputs.analysis_outputs import (
     AnswerAnalysisOutput,
     CheatingDetectionOutput,
 )
-from app.prompts import get_prompt
+from app.prompts import (
+    ANSWER_ANALYSIS_PROMPT,
+    CHEATING_DETECTION_PROMPT,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -191,36 +194,35 @@ async def _run_parallel_analysis(
 
     expected_coverage_str = "\n".join(f"- {c}" for c in expected_coverage) if expected_coverage else "Not specified"
 
-    # Build prompts
-    analysis_prompt = get_prompt(
-        "answer_analysis",
-        question=question,
-        answer=answer,
-        pillar_name=pillar_name,
-        expected_coverage=expected_coverage_str,
-        depth_level=str(depth_level),
-        time_taken_seconds="45",
-        is_follow_up=str(question_records[-1].get("is_follow_up", False)).lower() if question_records else "false",
-    )
+    # Build prompt inputs for analysis
+    analysis_inputs = {
+        "question": question,
+        "answer": answer,
+        "pillar_name": pillar_name,
+        "expected_coverage": expected_coverage_str,
+        "depth_level": str(depth_level),
+        "time_taken_seconds": "45",
+        "is_follow_up": str(question_records[-1].get("is_follow_up", False)).lower() if question_records else "false",
+    }
 
     question_number = state.get("total_questions_asked", 1)
     previous_quality = _get_previous_answer_quality(state)
 
-    cheating_prompt = get_prompt(
-        "cheating_detection",
-        question=question,
-        answer=answer,
-        question_number=str(question_number),
-        previous_answer_quality=previous_quality,
-        time_to_respond_seconds="30",
-        candidate_demonstrated_level=_estimate_candidate_level(state),
-    )
+    # Build prompt inputs for cheating detection
+    cheating_inputs = {
+        "question": question,
+        "answer": answer,
+        "question_number": str(question_number),
+        "previous_answer_quality": previous_quality,
+        "time_to_respond_seconds": "30",
+        "candidate_demonstrated_level": _estimate_candidate_level(state),
+    }
 
     llm = get_llm()
 
     # Run both in parallel
-    analysis_task = llm.with_structured_output(AnswerAnalysisOutput).ainvoke(analysis_prompt)
-    cheating_task = llm.with_structured_output(CheatingDetectionOutput).ainvoke(cheating_prompt)
+    analysis_task = llm.with_structured_output(AnswerAnalysisOutput).ainvoke(ANSWER_ANALYSIS_PROMPT.format(**analysis_inputs))
+    cheating_task = llm.with_structured_output(CheatingDetectionOutput).ainvoke(CHEATING_DETECTION_PROMPT.format(**cheating_inputs))
 
     analysis_output, cheating_output = await asyncio.gather(analysis_task, cheating_task)
 

@@ -5,25 +5,15 @@ These prompts are used by the answer_analyzer node to evaluate
 candidate responses and detect potential cheating.
 """
 
-from .registry import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 
-ANALYSIS_PROMPTS = [
-    # ═══════════════════════════════════════════════════════════════════════════
-    # ANSWER ANALYSIS
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="answer_analysis",
-        version="2.0.0",
-        description="Analyze a candidate's answer for quality signals",
-        required_vars=["question", "answer", "pillar_name", "expected_coverage"],
-        optional_vars={
-            "depth_level": "3",
-            "time_taken_seconds": "45",
-            "is_follow_up": "false",
-        },
-        output_schema="AnswerAnalysisOutput",
-        template="""You are evaluating a candidate's technical interview answer.
+# ═══════════════════════════════════════════════════════════════════════════
+# ANSWER ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════
+
+ANSWER_ANALYSIS_PROMPT = ChatPromptTemplate.from_template(
+    """You are evaluating a candidate's technical interview answer.
 
 QUESTION ASKED:
 {question}
@@ -65,23 +55,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "suggested_probe_areas": ["area1", "area2"],
     "overall_signal_score": 0.0-10.0,
     "analysis_summary": "One sentence summary"
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # CHEATING DETECTION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="cheating_detection",
-        version="2.0.0",
-        description="Detect potential cheating patterns in an answer",
-        required_vars=["question", "answer", "question_number"],
-        optional_vars={
-            "previous_answer_quality": "moderate",
-            "time_to_respond_seconds": "30",
-            "candidate_demonstrated_level": "intermediate",
-        },
-        output_schema="CheatingDetectionOutput",
-        template="""Analyze this interview answer for potential cheating indicators.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHEATING DETECTION
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHEATING_DETECTION_PROMPT = ChatPromptTemplate.from_template(
+    """Analyze this interview answer for potential cheating indicators.
 
 QUESTION #{question_number}:
 {question}
@@ -119,21 +102,16 @@ OUTPUT FORMAT (JSON only, no markdown):
     "confidence": 0.0-1.0,
     "reasoning": "Brief explanation of assessment",
     "recommended_action": "continue|warn|flag|escalate"
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # CHEATING ESCALATION
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="cheating_escalation",
-        version="1.0.0",
-        description="Determine cheating escalation based on accumulated flags",
-        required_vars=["current_level", "accumulated_flags", "flag_count"],
-        optional_vars={
-            "interview_progress": "50%",
-        },
-        output_schema="CheatingEscalationOutput",
-        template="""Evaluate whether to escalate cheating level based on accumulated evidence.
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHEATING ESCALATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHEATING_ESCALATION_PROMPT = ChatPromptTemplate.from_template(
+    """Evaluate whether to escalate cheating level based on accumulated evidence.
 
 CURRENT CHEATING LEVEL: {current_level}
 TOTAL FLAGS: {flag_count}
@@ -161,21 +139,19 @@ OUTPUT FORMAT (JSON only, no markdown):
     "should_terminate": true|false,
     "termination_reason": "reason if terminating, else null",
     "cumulative_evidence": ["summary of key evidence points"]
-}}""",
-    ),
-    # ═══════════════════════════════════════════════════════════════════════════
-    # QUICK RELEVANCE CHECK
-    # ═══════════════════════════════════════════════════════════════════════════
-    PromptTemplate(
-        name="quick_relevance_check",
-        version="1.0.0",
-        description="Quick check if answer is relevant (for fast filtering)",
-        required_vars=["question", "answer"],
-        template="""Does this answer attempt to address the question?
+}}"""
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# QUICK RELEVANCE CHECK
+# ═══════════════════════════════════════════════════════════════════════════
+
+QUICK_RELEVANCE_CHECK_PROMPT = ChatPromptTemplate.from_template(
+    """Does this answer attempt to address the question?
 
 QUESTION: {question}
 ANSWER: {answer}
 
-Reply with ONLY "relevant" or "irrelevant" (one word, lowercase).""",
-    ),
-]
+Reply with ONLY "relevant" or "irrelevant" (one word, lowercase)."""
+)

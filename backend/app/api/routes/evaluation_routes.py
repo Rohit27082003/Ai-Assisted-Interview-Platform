@@ -28,7 +28,19 @@ async def evaluate_interview(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Run evaluation graph on a completed interview."""
-    interview = await db.get(Interview, interview_id)
+    # Verify ownership via join
+    query = (
+        select(Interview)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Interview.interview_id == interview_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    interview = result.scalar_one_or_none()
+
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
@@ -132,7 +144,19 @@ async def generate_report(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Generate a recruiter-grade report for a completed and evaluated interview."""
-    interview = await db.get(Interview, interview_id)
+    # Verify ownership via join
+    query = (
+        select(Interview)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Interview.interview_id == interview_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    interview = result.scalar_one_or_none()
+
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
@@ -267,9 +291,18 @@ async def get_report(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Retrieve an existing report."""
-    result = await db.execute(
-        select(Report).where(Report.interview_id == interview_id)
+    # Verify ownership via join chain
+    query = (
+        select(Report)
+        .join(Interview, Report.interview_id == Interview.interview_id)
+        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Report.interview_id == interview_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
     )
+    result = await db.execute(query)
     report = result.scalar_one_or_none()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")

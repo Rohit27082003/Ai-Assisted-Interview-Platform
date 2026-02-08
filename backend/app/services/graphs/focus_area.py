@@ -32,26 +32,27 @@ async def analyze_overlap_node(state: FocusAreaGraphState) -> FocusAreaGraphStat
     """Analyze the overlap between JD requirements and resume to identify probe areas."""
     llm = get_llm()
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a senior technical interviewer preparing for a candidate interview.
+        ("system", """You are the "Focus Area Selection Agent" for a technical interview.
+Your goal is to identify exactly 4-5 critical "pillars" for the interview.
 
-Given the Job Description requirements and the candidate's resume, identify exactly 4-5
-focus areas that should be deeply probed during the interview.
-
-For each focus area, explain WHY it should be probed:
-- Is it a critical JD requirement the candidate claims to have?
-- Is it a project they worked on that is highly relevant?
-- Is it a gap that needs verification?
-- Is it a strength that could differentiate them?
+Guidelines:
+1. Select 4-5 meaningful skill topics that exist in BOTH the JD and the Resume.
+2. DO NOT select random topics. Every topic must be justified by specific evidence from the resume.
+3. Prioritize:
+    - Core Competencies required by the JD.
+    - Critical Evaluation Areas (e.g., complex projects, specific tools).
+4. For each topic, the "reason" must explicitly state the provenance:
+    - "JD requires X; Resume shows usage in Project Y."
+    - "Critical skill X mentioned in Resume summary."
 
 JD Requirements:
 - Role: {role}
 - Must-have skills: {must_have_skills}
 - Tools: {tools}
 - Competencies: {competencies}
-- Experience needed: {experience_range}
 
 Return ONLY a JSON array of objects with keys "skill" and "reason".
-Example: [{{"skill": "Distributed Systems", "reason": "Mentioned in recent project at Company X, core JD requirement"}}]
+Example: [{{"skill": "React.js", "reason": "JD requires React; Candidate used it in 'E-commerce' project."}}]
 Limit to exactly 4-5 items. Do not include any markdown formatting."""),
         ("human", "Candidate Resume:\n{resume_text}"),
     ])

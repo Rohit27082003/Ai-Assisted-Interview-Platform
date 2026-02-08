@@ -9,8 +9,12 @@ Generates recruiter-grade output including:
 """
 
 from typing import TypedDict, List, Dict, Any
-from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
+
+from app.prompts import (
+    PERFORMANCE_ANALYSIS_PROMPT,
+    HIRING_RECOMMENDATION_PROMPT,
+)
 
 from app.core.llm import get_llm
 from app.core.logging import get_logger
@@ -57,40 +61,16 @@ async def analyze_performance_node(state: ReportGraphState) -> ReportGraphState:
             f"Justification: {ev.get('justification', '')}\n\n"
         )
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a senior hiring manager writing a candidate evaluation report.
-
-Role: {jd_title}
-Candidate: {candidate_name}
-Average Score: {avg_score}/5
-Topic Scores: {pillar_scores}
-
-Evaluation Details:
-{eval_summary}
-
-Identify:
-1. Top 3-5 strengths (specific to the interview performance)
-2. Top 3-5 weaknesses or areas of concern
-3. Any notable observations
-
-Return ONLY a JSON:
-{{
-  "strengths": ["list of specific strengths"],
-  "weaknesses": ["list of specific weaknesses"],
-  "observations": "any notable observations"
-}}
-Do not include any markdown formatting."""),
-        ("human", "Analyze this candidate's performance."),
-    ])
-
-    chain = prompt | llm
-    response = await chain.ainvoke({
-        "jd_title": state.get("jd_title", ""),
-        "candidate_name": state.get("candidate_name", ""),
-        "avg_score": state.get("average_score", 0),
+    # Build prompt inputs
+    prompt_inputs = {
+        "job_role": state.get("jd_title", "Candidate"),
+        "job_requirements": "Standard requirements for this role", # Placeholder as it's not in state
         "pillar_scores": str(state.get("pillar_scores", {})),
-        "eval_summary": eval_summary,
-    })
+        "evaluations_json": eval_summary,
+        "cheating_flags": str(state.get("cheating_flags", [])),
+    }
+
+    response = await PERFORMANCE_ANALYSIS_PROMPT.ainvoke(prompt_inputs)
 
     import json
     try:
@@ -115,38 +95,22 @@ async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphSt
         for flag in state["cheating_flags"]:
             cheating_summary += f"Level: {flag.get('level', 'unknown')}, Reasons: {flag.get('reasons', [])}. "
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are making a final hiring recommendation.
+    # Build performance analysis summary for the prompt
+    performance_analysis = (
+        f"Strengths: {', '.join(state.get('strengths', []))}\n"
+        f"Weaknesses: {', '.join(state.get('weaknesses', []))}"
+    )
 
-Role: {jd_title}
-Average Score: {avg_score}/5
-Strengths: {strengths}
-Weaknesses: {weaknesses}
-{cheating_info}
+    prompt_inputs = {
+        "job_role": state.get("jd_title", "Candidate"),
+        "job_requirements": "Standard requirements",
+        "overall_score": str(state.get("average_score", 0)),
+        "performance_analysis": performance_analysis,
+        "cheating_assessment": cheating_summary or "Clean",
+        "team_context": "General hiring context",
+    }
 
-Decision criteria:
-- Score >= 4.0 and no penalty flags → HIRE
-- Score >= 3.0 and score < 4.0 → BORDERLINE (unless penalty flags)
-- Score < 3.0 or penalty cheating flags → NO_HIRE
-
-Return ONLY a JSON:
-{{
-  "recommendation": "hire" or "no_hire" or "borderline",
-  "confidence_score": 0.0 to 1.0,
-  "summary": "2-3 paragraph recruiter summary explaining the recommendation"
-}}
-Do not include any markdown formatting."""),
-        ("human", "Generate the hiring recommendation."),
-    ])
-
-    chain = prompt | llm
-    response = await chain.ainvoke({
-        "jd_title": state.get("jd_title", ""),
-        "avg_score": state.get("average_score", 0),
-        "strengths": str(state.get("strengths", [])),
-        "weaknesses": str(state.get("weaknesses", [])),
-        "cheating_info": cheating_summary or "No cheating flags detected.",
-    })
+    response = await HIRING_RECOMMENDATION_PROMPT.ainvoke(prompt_inputs)
 
     import json
     try:

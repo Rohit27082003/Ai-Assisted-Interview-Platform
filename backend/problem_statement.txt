@@ -1,0 +1,217 @@
+Problem Statement (Agentic/LangGraph)
+Project Title
+AI-Assisted Intelligent Interview & Candidate Evaluation System (Agentic Interview Orchestrator)
+Background & Context
+Hiring quality talent remains a complex challenge. Recruiters face:
+Hundreds of resumes per role
+Manual shortlisting effort
+Human subjectivity and bias
+Inconsistent interview quality
+Lack of standardized evaluation
+Scalability limitations
+There is a need for a system that behaves like an intelligent autonomous interview assistant, capable of:
+Understanding requirements
+Understanding candidates
+Driving structured, human-like interviews
+Evaluating fairly and consistently
+This project aims to build such a system using an agent-driven workflow mindset.
+Core Problem to Solve (Agent View)
+We want a system that behaves like a coordinated team of intelligent agents where each agent has a clear responsibility and decision boundary.
+The system should be capable of:
+Accepting & understanding Job Description
+Accepting multiple resumes
+Automatically shortlisting candidates
+Selecting focus competency areas
+Conducting dynamic, voice-based interviews
+Asking relevant follow-ups
+Preventing cheating
+Evaluating responses
+Producing structured interview reports
+The experience should feel like interacting with a smart, human-level interviewer, not a static questionnaire.
+Overall LangGraph-Style Flow (Problem Perspective)
+Think of the system as a graph of stateful agents collaborating together.
+The structure has 6 subgraphs , these will be divided among 3 people as mentioned below , all 3 needs to come up with how data is passed between graphs and state is maintained.
+(intern 1)
+JD Intelligence Graph(have nodes and edges to scrape info from JD and filtering it out )
+Resume Intelligence & Shortlisting Graph(have nodes and edges to scrape info from resume and filtering it out based on previous graph outcome, if multiple matches then give preference to project then to skill)
+Focus Area Selection Graph(On the selected resumes , find out the pillars of the interview by selecting 4-5 focus area , wether it is project , or skills or something )
+(intern 2) + Frontend of entire system 
+Interview Orchestration Graph(based on the selected focus area , have starting question and follow up questions max 4-5 per pillar and then switch to other pillar) 
+(intern 3)
+Answer Understanding & Evaluation Graph(Capture question , user answer and standard answer derived by llm in a database and have evaluation metric to compare user answer against standard answer for each question)
+Reporting & Decision Support Graph(Generate final report for each candidate)
+Orchestration Graph(This will act as a entrypoint and based on tool binding the above mentioned graph will be selected , a single candidate id will be maintained to track each candidate across various subgraphs and a single state graph will be maintained)
+Stage 1 — JD Intelligence Agent
+tProblem Definition
+The system will receive an unstructured Job Description (JD).
+Responsibilities (Problem Expectation)
+This agent must:
+Understand job role context
+Identify mandatory & preferred skills
+Extract experience expectations
+Recognize responsibilities
+Extract tools/technology stack
+Understand competency expectations
+Constraints / Challenges
+JD may be long, unstructured, vague, mixed language
+Must extract meaningful, interview-relevant intelligence
+Output Expectation
+A structured understanding of job requirements for downstream agents.
+Stage 2 — Resume Intelligence & Shortlisting Agent
+System will receive multiple candidate resumes.
+Responsibilities (Problem Expectation)
+Agent must:
+Extract skills, experience, background
+Understand candidate claims
+Match JD vs resume meaningfully
+Assign logical relevance score
+Shortlist candidates above certain score threshold
+Non-trivial Challenges
+Resumes in different formats
+Different terminology for same skills
+Exaggerated / misleading resumes
+Must avoid pure keyword matching
+Output Expectation
+A filtered list of shortlisted candidates.
+Stage 3 — Focus Area Selection Agent
+For each shortlisted candidate, the agent must identify key interview focus areas.
+Responsibilities
+Select 4–5 meaningful skill topics
+Ensure alignment with:
+JD requirements
+Resume claims
+Constraints
+No random selection
+Select only similar resume as per JD , also highlight which skill from resume resulted in selection
+Should represent:
+Core competencies
+Critical evaluation areas
+These become interview “pillars”.
+Stage 4 — Interview Orchestration Agent
+This is the core of the system.
+This agent simulates a real interview session.
+Interview Execution Rules
+Each topic should be handled conversationally:
+Step 1 → Ask Initial Question
+System asks topic-specific opening question
+Step 2 → Candidate Response Behavior(Audio mechanism , voice to text real time conversion)
+Candidate answers:
+Through microphone / audio
+System must:
+Capture speech
+Convert to text
+Understand meaning
+Step 3 → Dynamic Follow-Ups
+Based on response:
+System asks logical follow-up questions
+Follow-ups must be:
+Context-aware
+Non-repetitive
+Human-like
+Progressive in depth
+Step 4 → Follow-up Limits
+Max 5–6 follow-ups per topic
+After last follow-up:
+System must auto-shift to next topic
+Key note: Maintain state so that relevant questions can be asked 
+Strict Speaking & Interaction Timers
+This must be enforced strictly.
+Reading Time
+Before answering each question:
+Candidate gets 20 seconds to read / think(frame questions in this way only , so that a normal reader can read it within 12-15 seconds, keeping the rest as buffer)
+ Answer Time Window
+Candidate gets:
+45 seconds to speak
+Audio captures only within window
+Once 45 seconds ends → system stops listening
+Candidate also gets options to move to next question if he already finished answering before 45 second window 
+Immediately proceeds to:
+Move to next question
+This ensures:
+Fairness
+Standardization
+Time discipline
+Scalability
+Stage 5 — Cheating / Misconduct Detection Agent
+The system must actively detect manipulation.
+Key Problems to Detect
+Candidate repeating question outloud  instead of answering
+Expected Behavior
+Detect suspicious behavior automatically
+Issue warnings mid-interview
+Penalize evaluation if repeated
+Maintain professional tone
+This agent ensures interview integrity.
+Stage 6 — Answer Understanding & Evaluation Agent
+At interview end, responses must be evaluated intelligently.
+Evaluation Expectations
+System should judge:
+Relevance of answer to question
+Understanding depth
+Technical correctness
+Practical experience evidence
+Reasoning ability
+Communication clarity
+Output
+Clear score
+Meaningful justification
+Comparison between:
+Expected answer vs actual answer
+Closeness / similarity estimation
+Evaluation must be:
+Standardized
+Explainable
+Neutral
+Non-biased
+Stage 7 — Reporting & Decision Support Agent
+Final structured report must be generated.
+Candidate-Level Report Must Include
+Candidate details
+Selected skill topics
+Questions asked
+Answers provided
+Follow-up trail
+Cheating warnings
+Evaluation metrics
+Final recommendation
+And a unique key which will correspond to database where candidates answers are stored just to get back as a HITL
+Recruiter View Must Provide
+Ranking / scoring
+Strength analysis
+Weakness analysis
+Fitment recommendation
+Business Outcome
+System must deliver:
+✔ Automated interviewing
+✔ Standardized evaluation
+✔ Bias reduction
+✔ Recruiter workload reduction
+✔ Smart decision support
+✔ Real human-like experience
+What NOT to Do
+Do NOT:
+Build static questionnaire
+Create predefined MCQs
+Use fixed interview script
+Do keyword matching evaluation
+Skip cheating prevention
+Treat as chatbot project
+This is a stateful, agent-driven, conversation intelligence system.
+Must Build a System That Can
+Understand JD
+Understand resumes
+Shortlist logically
+Identify interview topics
+Drive dynamic interview
+Capture audio
+Convert audio to text
+Ask follow-ups based on context
+Detect cheating
+Evaluate responses
+Generate final report
+While ensuring:
+Professionalism
+Logical decisioning
+Real interview feel
+Strong evaluation accuracy
+Strict timing control (20s read + 45s answer)

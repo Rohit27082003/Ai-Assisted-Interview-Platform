@@ -30,12 +30,13 @@ class AuthenticatedUser:
         email: str,
         name: str,
         access_token: str,
+        recruiter_id: UUID = None,
     ):
         self.sub = sub  # Cognito user ID
         self.email = email
         self.name = name
         self.access_token = access_token
-
+        self.recruiter_id = recruiter_id
 
 class AuthenticatedCandidate:
     """Represents an authenticated candidate via session."""
@@ -88,6 +89,7 @@ async def get_current_user(
 
 async def require_recruiter(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> AuthenticatedUser:
     """
     Dependency that requires a valid recruiter authentication.
@@ -120,14 +122,45 @@ async def require_recruiter(
             detail="Could not retrieve user information",
             headers={"WWW-Authenticate": "Bearer"},
         )
+        
+    # Fetch recruiter from DB to get recruiter_id
+    from app.models.models import Recruiter
+    result = await db.execute(select(Recruiter).where(Recruiter.cognito_sub == user_info.get("sub")))
+    recruiter = result.scalar_one_or_none()
     
-    logger.info(f"Authenticated recruiter: {user_info.get('email')}")
+    if not recruiter:
+        # User in Cognito but not DB (e.g. after DB reset or fresh login)
+        # JIT Provisioning: Auto-create the recruiter record
+        logger.info(f"JIT Provisioning for: {user_info.get('email')}")
+        
+        try:
+            new_recruiter = Recruiter(
+                cognito_sub=user_info.get("sub"),
+                email=user_info.get("email"),
+                name=user_info.get("name", ""),
+            )
+            db.add(new_recruiter)
+            await db.commit()
+            await db.refresh(new_recruiter)
+            recruiter = new_recruiter
+            logger.info(f"JIT Provisioning successful: {recruiter.recruiter_id}")
+            
+        except Exception as e:
+            logger.error(f"JIT Provisioning failed: {str(e)}")
+            # Fallback to strict error if creation fails
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to synchronize user account.",
+            )
+    
+    logger.info(f"Authenticated recruiter: {user_info.get('email')} ({recruiter.recruiter_id})")
     
     return AuthenticatedUser(
         sub=user_info.get("sub", ""),
         email=user_info.get("email", ""),
         name=user_info.get("name", ""),
         access_token=token,
+        recruiter_id=recruiter.recruiter_id,
     )
 
 

@@ -8,8 +8,13 @@ For each Q/A:
 """
 
 from typing import TypedDict, List, Dict, Any
-from langchain_core.prompts import ChatPromptTemplate
+import json
 from langgraph.graph import StateGraph, END
+
+from app.prompts import (
+    REFERENCE_ANSWER_PROMPT,
+    RUBRIC_SCORING_PROMPT,
+)
 
 from app.core.llm import get_llm
 from app.core.logging import get_logger
@@ -37,29 +42,37 @@ async def generate_references_node(state: EvaluationGraphState) -> EvaluationGra
     evaluations = []
 
     for entry in state["transcript_history"]:
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a technical expert. Generate a comprehensive reference answer
-for this interview question.
-
-Topic: {pillar}
-Role context: {role}
-
-The reference answer should be what a strong candidate would say in 45 seconds.
-Be concise but thorough. Return ONLY the reference answer text."""),
-            ("human", "Question: {question}"),
-        ])
-        chain = prompt | llm
-        response = await chain.ainvoke({
-            "pillar": entry.get("pillar", "General"),
-            "role": state["jd_object"].get("role", ""),
+        prompt_inputs = {
             "question": entry["question"],
-        })
+            "pillar_name": entry.get("pillar", "General"),
+            "job_role": state["jd_object"].get("role", "Candidate"),
+            "depth_level": "3",  # Defaulting to 3 if not tracked per question in transcript
+            "time_constraint": "45 seconds",
+        }
+
+        response = await REFERENCE_ANSWER_PROMPT.ainvoke(prompt_inputs)
+        
+        try:
+            ref_data = json.loads(response.content)
+            reference_answer = ref_data.get("reference_answer", "")
+            key_points = ref_data.get("key_points", [])
+            advanced_points = ref_data.get("advanced_points", [])
+            common_mistakes = ref_data.get("common_mistakes", [])
+        except (json.JSONDecodeError, AttributeError):
+            # Fallback if specific JSON parsing fails
+            reference_answer = response.content.strip()
+            key_points = []
+            advanced_points = []
+            common_mistakes = []
 
         evaluations.append({
             "pillar": entry.get("pillar", "General"),
             "question": entry["question"],
             "answer": entry.get("answer", ""),
-            "reference_answer": response.content.strip(),
+            "reference_answer": reference_answer,
+            "key_points": key_points,
+            "advanced_points": advanced_points,
+            "common_mistakes": common_mistakes,
             "is_follow_up": entry.get("is_follow_up", False),
         })
 
@@ -74,47 +87,37 @@ async def rubric_scoring_node(state: EvaluationGraphState) -> EvaluationGraphSta
     scored_evaluations = []
 
     for eval_item in state["evaluations"]:
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an objective interview evaluator using a strict rubric.
-
-Score the candidate's answer against the reference answer on these dimensions (1-5 each):
-
-RUBRIC:
-- correctness: 1=Wrong, 2=Mostly wrong, 3=Partially correct, 4=Mostly correct, 5=Fully correct
-- depth: 1=Surface only, 2=Shallow, 3=Moderate depth, 4=Good depth, 5=Expert depth
-- reasoning: 1=No reasoning, 2=Weak logic, 3=Some reasoning, 4=Good reasoning, 5=Excellent logical flow
-- clarity: 1=Incoherent, 2=Unclear, 3=Understandable, 4=Clear, 5=Exceptionally clear
-
-Question: {question}
-Reference Answer: {reference_answer}
-Candidate Answer: {candidate_answer}
-
-Return ONLY a JSON:
-{{
-  "correctness": <1-5>,
-  "depth": <1-5>,
-  "reasoning": <1-5>,
-  "clarity": <1-5>,
-  "justification": "2-3 sentence explanation of scores"
-}}
-Do not include any markdown formatting."""),
-            ("human", "Score this answer."),
-        ])
-        chain = prompt | llm
-        response = await chain.ainvoke({
+        prompt_inputs = {
             "question": eval_item["question"],
-            "reference_answer": eval_item["reference_answer"],
             "candidate_answer": eval_item["answer"],
-        })
+            "reference_answer": eval_item["reference_answer"],
+            "key_points": "\n- ".join(eval_item.get("key_points", [])),
+            "advanced_points": "\n- ".join(eval_item.get("advanced_points", [])),
+            "common_mistakes": "\n- ".join(eval_item.get("common_mistakes", [])),
+        }
 
-        import json
+        response = await RUBRIC_SCORING_PROMPT.ainvoke(prompt_inputs)
+
         try:
             scores = json.loads(response.content)
-            correctness = int(scores.get("correctness", 3))
-            depth = int(scores.get("depth", 3))
-            reasoning = int(scores.get("reasoning", 3))
-            clarity = int(scores.get("clarity", 3))
-            overall = round((correctness + depth + reasoning + clarity) / 4, 2)
+            # Handle potentially different structure if prompt changed, 
+            # ideally prompt returns "correctness": {"score": 5, ...} but we need to be robust.
+            # The prompt defines: "correctness": { "score": 1-5, ... }
+            
+            def get_score(dim):
+                val = scores.get(dim)
+                if isinstance(val, dict):
+                    return int(val.get("score", 3))
+                return int(val) if val else 3
+
+            correctness = get_score("correctness")
+            depth = get_score("depth")
+            reasoning = get_score("reasoning")
+            clarity = get_score("clarity")
+            
+            overall = float(scores.get("overall_score", 0))
+            if overall == 0:
+                 overall = round((correctness + depth + reasoning + clarity) / 4, 2)
 
             eval_item.update({
                 "correctness": correctness,
@@ -122,9 +125,9 @@ Do not include any markdown formatting."""),
                 "reasoning": reasoning,
                 "clarity": clarity,
                 "overall_score": overall,
-                "justification": scores.get("justification", ""),
+                "justification": str(scores.get("correctness", {}).get("justification", "See details")), # Simplified justification handling
             })
-        except (json.JSONDecodeError, AttributeError, ValueError):
+        except (json.JSONDecodeError, AttributeError, ValueError, TypeError):
             eval_item.update({
                 "correctness": 3,
                 "depth": 3,

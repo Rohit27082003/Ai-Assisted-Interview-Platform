@@ -2,8 +2,10 @@
 
 from typing import List, Dict, Any, Optional
 from langchain_chroma import Chroma
+import chromadb
 from langchain_huggingface import HuggingFaceEmbeddings
 from app.core.logging import get_logger
+from app.core.config import get_settings
 
 logger = get_logger(__name__)
 
@@ -15,17 +17,31 @@ class ChromaService:
     JD_COLLECTION = "jd_collection"
 
     def __init__(self):
+        settings = get_settings()
+        
         # Initialize embeddings (lightweight model)
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         
-        # Initialize vector stores (in-memory for now to match previous behavior)
-        # Note: In production, providing a persist_directory would be better.
+        # Initialize client
+        if settings.USE_CHROMA_SERVER and settings.CHROMA_SERVER_HOST:
+             # Use HTTP Client
+             client = chromadb.HttpClient(
+                 host=settings.CHROMA_SERVER_HOST,
+                 port=settings.CHROMA_SERVER_PORT
+             )
+        else:
+             # Use Persistent Client (embedded)
+             client = chromadb.PersistentClient()
+
+        # Initialize vector stores using the client
         self.resumes_db = Chroma(
+            client=client,
             collection_name=self.RESUMES_COLLECTION,
             embedding_function=self.embeddings,
             collection_metadata={"hnsw:space": "cosine"}
         )
         self.jd_db = Chroma(
+            client=client,
             collection_name=self.JD_COLLECTION,
             embedding_function=self.embeddings,
             collection_metadata={"hnsw:space": "cosine"}

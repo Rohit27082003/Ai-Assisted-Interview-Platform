@@ -60,6 +60,7 @@ export default function SignupPage() {
             }
 
             const data = await response.json();
+            console.log('Signup Response:', data); // DEBUG: Check if requires_confirmation is present
 
             if (data.requires_confirmation) {
                 toast.success('Account created! Please check your email for confirmation code.');

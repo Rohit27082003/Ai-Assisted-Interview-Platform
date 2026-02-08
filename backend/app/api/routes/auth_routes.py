@@ -95,37 +95,55 @@ async def recruiter_signup(
     """
     cognito = get_cognito_service()
     
-    # Register with Cognito
-    result = await cognito.sign_up(
-        email=request.email,
-        password=request.password,
-        name=request.name,
-        phone_number=request.phone_number,
-    )
-    
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Registration failed. Email may already be registered.",
+    try:
+        # Register with Cognito
+        result = await cognito.sign_up(
+            email=request.email,
+            password=request.password,
+            name=request.name,
+            phone_number=request.phone_number,
         )
-    
-    # Store recruiter in database
-    from app.models.models import Recruiter
-    recruiter = Recruiter(
-        cognito_sub=result.get("user_sub", ""),
-        email=request.email,
-        name=request.name,
-    )
-    db.add(recruiter)
-    await db.commit()
-    
-    logger.info(f"Recruiter registered: {request.email}")
-    
-    return SignupResponse(
-        message="Registration successful. Please check your email for confirmation.",
-        user_sub=result.get("user_sub"),
-        requires_confirmation=result.get("requires_confirmation", True),
-    )
+        
+        if not result:
+            logger.warning("Cognito registration failed or user exists")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Registration failed. Email may already be registered.",
+            )
+        
+        # Store recruiter in database
+        from app.models.models import Recruiter
+        recruiter = Recruiter(
+            cognito_sub=result.get("user_sub", ""),
+            email=request.email,
+            name=request.name,
+        )
+        db.add(recruiter)
+        await db.commit()
+        
+        logger.info(f"Recruiter registered: {request.email}")
+        
+        return SignupResponse(
+            message="Registration successful. Please check your email for confirmation.",
+            user_sub=result.get("user_sub"),
+            requires_confirmation=result.get("requires_confirmation", True),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Check for IntegrityError (duplicate email in DB)
+        if "IntegrityError" in str(type(e)) or "UniqueViolationError" in str(e):
+             logger.warning(f"Recruiter already exists in DB: {request.email}")
+             raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Account already exists. Please log in.",
+            )
+            
+        logger.error(f"Signup unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during signup",
+        )
 
 
 class ConfirmSignupRequest(BaseModel):
