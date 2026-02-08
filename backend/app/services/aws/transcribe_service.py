@@ -31,11 +31,16 @@ class InterviewEventHandler(TranscriptResultStreamHandler):
             
             if result.is_partial:
                 if self.stream_state["on_partial"]:
-                    await self.stream_state["on_partial"](transcript)
+                    full_text = (self.stream_state["final_text"] + " " + transcript).strip()
+                    await self.stream_state["on_partial"](full_text)
             else:
                 self.stream_state["final_text"] += " " + transcript
                 if self.stream_state["on_final"]:
                     await self.stream_state["on_final"](transcript)
+                
+                # Also trigger partial update with new final text to keep UI in sync
+                if self.stream_state["on_partial"]:
+                    await self.stream_state["on_partial"](self.stream_state["final_text"].strip())
 
 
 class TranscribeStreamService:
@@ -67,6 +72,11 @@ class TranscribeStreamService:
         
         logger.info(f"Transcription stream started: {stream_id}")
         return stream_id
+
+    def is_active(self, stream_id: str) -> bool:
+        """Check if a stream is currently active."""
+        stream = self._active_streams.get(stream_id)
+        return bool(stream and stream.get("is_active"))
 
     async def feed_audio(self, stream_id: str, audio_chunk: bytes) -> None:
         """Feed audio data to the transcription stream."""

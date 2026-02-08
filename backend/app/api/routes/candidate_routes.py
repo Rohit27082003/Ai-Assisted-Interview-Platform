@@ -234,6 +234,7 @@ async def shortlist_candidates(
 
         # Update candidate
         candidate.shortlist_score = score
+        logger.info(f"Adding debug log: Graph Result for {candidate.candidate_id}: {graph_result.get('scoring_details')}")
         candidate.graph_state = {
             "scoring_details": graph_result.get("scoring_details", {}),
             "vector_score": graph_result.get("vector_score", 0.0),

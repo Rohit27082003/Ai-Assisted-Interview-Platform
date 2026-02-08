@@ -23,6 +23,7 @@ from langgraph.graph import StateGraph, END
 from app.core.llm import get_llm
 from app.services.vector_store.chroma_service import get_chroma_service
 from app.core.logging import get_logger
+from app.prompts.resume_prompts import RESUME_PARSER_PROMPT, RESUME_ANALYSIS_PROMPT
 
 logger = get_logger(__name__)
 
@@ -52,28 +53,18 @@ class ResumeGraphState(TypedDict):
 async def parse_resume_node(state: ResumeGraphState) -> ResumeGraphState:
     """Extract structured information from resume text using LLM."""
     llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert resume parser. Extract structured information from the resume.
-Return ONLY a JSON object with keys:
-- "skills": list of technical skills
-- "projects": list of project descriptions (brief)
-- "experience_years": estimated years of experience (number)
-- "tools": list of tools/frameworks/platforms
-- "education": highest education level
-- "summary": 2-3 sentence professional summary
-
-Do not include any markdown formatting."""),
-        ("human", "{resume_text}"),
-    ])
+    prompt = RESUME_PARSER_PROMPT
     chain = prompt | llm
     response = await chain.ainvoke({"resume_text": state["resume_text"][:8000]})
     import json
     try:
         parsed = json.loads(response.content)
         state["chunk_metadata"] = [parsed]
+        logger.info(f"Resume parsed successfully for {state['candidate_id']}")
     except (json.JSONDecodeError, AttributeError):
+        logger.error(f"Failed to parse resume JSON for {state['candidate_id']}")
         state["chunk_metadata"] = [{"skills": [], "projects": [], "experience_years": 0}]
-    logger.info(f"Resume parsed for candidate {state['candidate_id']}")
+    
     return state
 
 
@@ -124,32 +115,11 @@ async def semantic_match_node(state: ResumeGraphState) -> ResumeGraphState:
     """Perform semantic matching between resume and JD across dimensions."""
     llm = get_llm()
     jd_obj = state["jd_object"]
-    resume_meta = state["chunk_metadata"][0] if state.get("chunk_metadata") else {}
-    resume_text_short = state["resume_text"][:4000]
+    resume_text_short = state["resume_text"][:6000] # Increased context window
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert technical recruiter. Evaluate the candidate's fit for the specific Job Description (JD) requirements.
-
-CRITICAL INSTRUCTIONS:
-1. CALCULATE EXPERIENCE: Estimate the candidate's total years of RELEVANT full-time experience. Ignore internships unless the JD allows them.
-2. COMPARE WITH REQUIRED: {experience_range}.
-3. PENALIZE MISMATCH: 
-   - If the candidate has FEWER years than the minimum required, 'experience_score' MUST be 0.0.
-   - If the candidate is a student/undergraduate and the role requires experience, 'experience_score' MUST be 0.0.
-   - Do not hallucinate experience.
-
-Score dimensions (0.0 to 1.0):
-1. skills_score: Semantic match of technical skills. Priorities: {must_have_skills}.
-2. projects_score: Relevance and complexity of projects given the role ({role}).
-3. experience_score: Strict adherence to years of experience. 0.0 if not met.
-4. tooling_score: Proficiency in required tools ({tools}).
-
-Use SEMANTIC understanding, not keyword matching.
-Return ONLY a JSON: {{"skills_score": 0.0, "projects_score": 0.0, "experience_score": 0.0, "tooling_score": 0.0, "reasoning": "brief explanation"}}
-Do not include any markdown formatting."""),
-        ("human", "Resume:\n{resume_text}"),
-    ])
+    prompt = RESUME_ANALYSIS_PROMPT
     chain = prompt | llm
+    
     response = await chain.ainvoke({
         "must_have_skills": str(jd_obj.get("must_have_skills", [])),
         "good_to_have": str(jd_obj.get("good_to_have", [])),
@@ -161,20 +131,33 @@ Do not include any markdown formatting."""),
 
     import json
     try:
-        scores = json.loads(response.content)
-        state["skills_score"] = float(scores.get("skills_score", 0))
-        state["projects_score"] = float(scores.get("projects_score", 0))
-        state["experience_score"] = float(scores.get("experience_score", 0))
-        state["tooling_score"] = float(scores.get("tooling_score", 0))
+        content = response.content.replace("```json", "").replace("```", "").strip()
+        logger.info(f"Raw LLM Response for {state['candidate_id']}: {content}")
+        scores = json.loads(content)
+        
+        # Normalize 0-100 scale to 0.0-1.0
+        state["skills_score"] = float(scores.get("skills_score", 0)) / 100.0
+        state["projects_score"] = float(scores.get("projects_score", 0)) / 100.0
+        state["experience_score"] = float(scores.get("experience_score", 0)) / 100.0
+        state["tooling_score"] = float(scores.get("tooling_score", 0)) / 100.0
+        
+        # Keep detailed reasoning
         state["scoring_details"] = scores
-    except (json.JSONDecodeError, AttributeError, ValueError):
+        
+        logger.info(f"Semantic match: {scores.get('overall_match_confidence')}% confidence")
+    except (json.JSONDecodeError, AttributeError, ValueError) as e:
+        logger.error(f"Failed to parse semantic match scores: {e}. Raw content: {response.content}")
         state["skills_score"] = 0.0
         state["projects_score"] = 0.0
         state["experience_score"] = 0.0
         state["tooling_score"] = 0.0
-        state["scoring_details"] = {}
+        state["scoring_details"] = {
+            "reasoning": "Failed to parse AI analysis. Please try again.",
+            "pros": [], 
+            "cons": [], 
+            "red_flags": []
+        }
 
-    logger.info(f"Semantic match done for candidate {state['candidate_id']}")
     return state
 
 

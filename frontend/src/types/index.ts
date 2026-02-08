@@ -38,6 +38,10 @@ export interface Candidate {
     vector_score: number;
     final_score: number;
     reasoning?: string;
+    pros?: string[];
+    cons?: string[];
+    red_flags?: string[];
+    missing_critical_skills?: string[];
   };
 }
 
@@ -86,7 +90,7 @@ export interface InterviewQuestion {
 }
 
 export interface WSMessage {
-  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error' | 'terminated' | 'restore_state';
+  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error' | 'terminated' | 'restore_state' | 'transcript_partial';
   data: Record<string, any>;
 }
 

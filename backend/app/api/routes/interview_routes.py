@@ -568,6 +568,25 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
                 chunk_data = msg.get("data", {})
                 audio_bytes = base64.b64decode(chunk_data.get("chunk", ""))
                 stream_id = active_sessions[interview_id]["stream_id"]
+                
+                # Start stream if not active
+                if not transcribe_service.is_active(stream_id):
+                    async def on_partial(text):
+                        try:
+                            # Verify session is still active/valid
+                            if interview_id in active_sessions:
+                                await websocket.send_json({
+                                    "type": "transcript_partial",
+                                    "data": {"text": text}
+                                })
+                        except Exception as e:
+                            logger.error(f"Failed to send partial transcript: {e}")
+
+                    await transcribe_service.start_stream(
+                        interview_id,
+                        on_partial=on_partial
+                    )
+
                 await transcribe_service.feed_audio(stream_id, audio_bytes)
 
             elif msg_type == "answer_started":

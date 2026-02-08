@@ -217,6 +217,10 @@ export default function InterviewPage() {
         }
         toast.success('Session restored');
         break;
+
+      case 'transcript_partial':
+        setAnswerText(msg.data.text);
+        break;
     }
   }, [startRecording, submitAnswer]);
 
@@ -543,6 +547,12 @@ export default function InterviewPage() {
                       <span className="relative inline-flex rounded-full h-6 w-6 bg-red-500"></span>
                     </span>
                     <p className="text-red-600 font-medium animate-pulse">Recording ({formatTime(timeLeft)})...</p>
+                  </div>
+
+                  {/* Live Transcript Display */}
+                  <div className="w-full max-w-2xl bg-gray-50 p-4 rounded-lg border border-gray-200 min-h-[100px]">
+                    <p className="text-sm text-gray-500 mb-2">Live Transcript:</p>
+                    <p className="text-gray-800 whitespace-pre-wrap">{answerText || "Listening..."}</p>
                   </div>
 
                   <button
