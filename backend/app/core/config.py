@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_TEMPERATURE: float = 0.3
     GROQ_MAX_TOKENS: int = 4096
+    GOOGLE_API_KEY: str
+    GOOGLE_MODEL: str = "gemini-2.5-flash"
+    GOOGLE_TEMPERATURE: float = 0.3
+    GOOGLE_MAX_TOKENS: int = 4096
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/interview_db"
@@ -38,6 +42,37 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+
+    # SMTP Settings (for Email) - Support both SMTP_ and RELAY_ prefixes
+    SMTP_SERVER: str = "localhost"
+    SMTP_PORT: int = 25
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    RELAY_HOST: str = "localhost"  # Alternative to SMTP_SERVER
+    RELAY_PORT: int = 587
+    RELAY_USERNAME: str = ""
+    RELAY_PASSWORD: str = ""
+    EMAILS_FROM_EMAIL: str = "noreply@interview-platform.com"
+
+    @property
+    def smtp_host(self) -> str:
+        """Get SMTP host, preferring RELAY_HOST if set."""
+        return self.RELAY_HOST if self.RELAY_HOST != "localhost" else self.SMTP_SERVER
+
+    @property
+    def smtp_port(self) -> int:
+        """Get SMTP port, preferring RELAY_PORT if different from default."""
+        return self.RELAY_PORT if self.RELAY_PORT != 587 else self.SMTP_PORT
+
+    @property
+    def smtp_username(self) -> str:
+        """Get SMTP username, preferring RELAY_USERNAME if set."""
+        return self.RELAY_USERNAME if self.RELAY_USERNAME else self.SMTP_USERNAME
+
+    @property
+    def smtp_password(self) -> str:
+        """Get SMTP password, preferring RELAY_PASSWORD if set."""
+        return self.RELAY_PASSWORD if self.RELAY_PASSWORD else self.SMTP_PASSWORD
 
     # Interview Config
     RESUME_SHORTLIST_THRESHOLD: float = 0.65
@@ -61,7 +96,7 @@ class Settings(BaseSettings):
 
     # AWS Transcribe
     TRANSCRIBE_LANGUAGE_CODE: str = "en-US"
-    TRANSCRIBE_SAMPLE_RATE: int = 16000
+    TRANSCRIBE_SAMPLE_RATE: int = 48000
 
     # Debug
     DEBUG: bool = True
@@ -80,6 +115,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = str(ENV_FILE)
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 @lru_cache()

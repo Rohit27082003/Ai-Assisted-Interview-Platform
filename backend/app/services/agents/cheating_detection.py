@@ -10,8 +10,9 @@ Escalation: warning_1 → warning_2 → penalty
 
 from typing import Dict, Any, List
 from app.services.vector_store.chroma_service import get_chroma_service
-from app.core.llm import get_llm
+from app.core.llm import get_llm, get_structured_llm
 from langchain_core.prompts import ChatPromptTemplate
+from app.schemas.outputs.cheating_outputs import CheatingCheckOutput
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -127,30 +128,20 @@ class CheatingDetector:
         novel = [t for t in a_tokens if t not in q_tokens]
         return len(novel) / len(a_tokens)
 
+
     async def _llm_cheating_check(self, question: str, answer: str) -> Dict[str, Any]:
         """Use LLM to check for sophisticated cheating patterns."""
+        from app.prompts.cheating_prompts import CHEATING_CHECK_PROMPT
+        llm = get_structured_llm(CheatingCheckOutput, temperature=0.1)
+        chain = CHEATING_CHECK_PROMPT | llm
+        
         try:
-            llm = get_llm(temperature=0.1)
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are an interview integrity checker. Analyze if the answer shows signs of:
-1. Reading from a pre-prepared script (unnaturally perfect, textbook-like)
-2. Being dictated by someone else (inconsistent expertise level)
-3. Being copy-pasted from a source (overly formal, includes references)
-
-Question: {question}
-Answer: {answer}
-
-Return ONLY a JSON: {{"suspicious": true/false, "reason": "brief explanation"}}
-Do not include any markdown formatting."""),
-                ("human", "Analyze this Q&A pair."),
-            ])
-            chain = prompt | llm
-            response = await chain.ainvoke({
+            response: CheatingCheckOutput = await chain.ainvoke({
                 "question": question,
                 "answer": answer,
             })
-            import json
-            return json.loads(response.content)
+            return response.model_dump()
+
         except Exception as e:
             logger.error(f"LLM cheating check failed: {e}")
             return {"suspicious": False, "reason": ""}

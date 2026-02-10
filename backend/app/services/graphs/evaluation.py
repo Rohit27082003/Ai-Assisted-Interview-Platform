@@ -16,7 +16,8 @@ from app.prompts import (
     RUBRIC_SCORING_PROMPT,
 )
 
-from app.core.llm import get_llm
+from app.core.llm import get_llm, get_structured_llm
+from app.schemas.outputs.evaluation_outputs import ReferenceAnswerOutput, RubricScoreOutput
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,13 +33,14 @@ class EvaluationGraphState(TypedDict):
     evaluations: List[Dict[str, Any]]
     average_score: float
     pillar_scores: Dict[str, float]
+    cheating_flags: List[Dict[str, Any]]
 
 
 # ── Node Functions ────────────────────────────────────────────────
 
 async def generate_references_node(state: EvaluationGraphState) -> EvaluationGraphState:
     """Generate reference answers for each question."""
-    llm = get_llm()
+    llm = get_structured_llm(ReferenceAnswerOutput)
     evaluations = []
 
     for entry in state["transcript_history"]:
@@ -50,17 +52,17 @@ async def generate_references_node(state: EvaluationGraphState) -> EvaluationGra
             "time_constraint": "45 seconds",
         }
 
-        response = await REFERENCE_ANSWER_PROMPT.ainvoke(prompt_inputs)
+        chain = REFERENCE_ANSWER_PROMPT | llm
         
         try:
-            ref_data = json.loads(response.content)
-            reference_answer = ref_data.get("reference_answer", "")
-            key_points = ref_data.get("key_points", [])
-            advanced_points = ref_data.get("advanced_points", [])
-            common_mistakes = ref_data.get("common_mistakes", [])
-        except (json.JSONDecodeError, AttributeError):
-            # Fallback if specific JSON parsing fails
-            reference_answer = response.content.strip()
+            response: ReferenceAnswerOutput = await chain.ainvoke(prompt_inputs)
+            reference_answer = response.reference_answer
+            key_points = response.key_points
+            advanced_points = response.advanced_points
+            common_mistakes = response.common_mistakes
+        except Exception as e:
+            logger.error(f"Reference generation failed for {entry['question'][:20]}...: {e}")
+            reference_answer = "Reference answer generation failed."
             key_points = []
             advanced_points = []
             common_mistakes = []
@@ -82,9 +84,13 @@ async def generate_references_node(state: EvaluationGraphState) -> EvaluationGra
 
 
 async def rubric_scoring_node(state: EvaluationGraphState) -> EvaluationGraphState:
-    """Score each Q/A pair using rubric scoring (1-5)."""
-    llm = get_llm(temperature=0.1)
+    """Score each Q/A pair using rubric scoring (1-5) with cheating penalties."""
+    llm = get_structured_llm(RubricScoreOutput, temperature=0.1)
     scored_evaluations = []
+
+    # Get cheating flags for penalty calculation
+    cheating_flags = state.get("cheating_flags", [])
+    cheating_flag_map = {flag.get("question_id"): flag for flag in cheating_flags if flag.get("question_id")}
 
     for eval_item in state["evaluations"]:
         prompt_inputs = {
@@ -96,45 +102,82 @@ async def rubric_scoring_node(state: EvaluationGraphState) -> EvaluationGraphSta
             "common_mistakes": "\n- ".join(eval_item.get("common_mistakes", [])),
         }
 
-        response = await RUBRIC_SCORING_PROMPT.ainvoke(prompt_inputs)
+        chain = RUBRIC_SCORING_PROMPT | llm
 
         try:
-            scores = json.loads(response.content)
-            # Handle potentially different structure if prompt changed, 
-            # ideally prompt returns "correctness": {"score": 5, ...} but we need to be robust.
-            # The prompt defines: "correctness": { "score": 1-5, ... }
+            scores: RubricScoreOutput = await chain.ainvoke(prompt_inputs)
             
-            def get_score(dim):
-                val = scores.get(dim)
-                if isinstance(val, dict):
-                    return int(val.get("score", 3))
-                return int(val) if val else 3
+            # Extract scores from Pydantic model
+            correctness = scores.correctness.score
+            depth = scores.depth.score
+            reasoning = scores.reasoning.score
+            clarity = scores.clarity.score
+            relevance = scores.relevance.score
+            practical = scores.practical_application.score
+            
+            overall = scores.overall_score
+            justification = scores.correctness.justification # Use correctness justification as primary or generic
+            
+            # Comparison metrics
+            comparison = scores.expected_vs_actual_comparison
+            similarity = scores.similarity_score
 
-            correctness = get_score("correctness")
-            depth = get_score("depth")
-            reasoning = get_score("reasoning")
-            clarity = get_score("clarity")
-            
-            overall = float(scores.get("overall_score", 0))
-            if overall == 0:
-                 overall = round((correctness + depth + reasoning + clarity) / 4, 2)
+            # Apply cheating penalty if this question was flagged
+            question_id = eval_item.get("question_id")
+            cheating_penalty = 0.0
+            cheating_note = ""
+
+            if question_id and question_id in cheating_flag_map:
+                flag = cheating_flag_map[question_id]
+                severity = flag.get("severity", 0)
+
+                # Calculate penalty: 0-30% reduction based on severity (0-10)
+                penalty_percentage = (severity / 10.0) * 0.3  # Max 30% penalty
+                cheating_penalty = overall * penalty_percentage
+                overall = max(0.0, overall - cheating_penalty)
+
+                # Also reduce individual scores proportionally
+                penalty_factor = 1.0 - penalty_percentage
+                correctness = max(0.0, correctness * penalty_factor)
+                depth = max(0.0, depth * penalty_factor)
+                reasoning = max(0.0, reasoning * penalty_factor)
+                clarity = max(0.0, clarity * penalty_factor)
+                relevance = max(0.0, relevance * penalty_factor)
+                practical = max(0.0, practical * penalty_factor)
+
+                cheating_note = f" [PENALTY: -{cheating_penalty:.1f} points, severity {severity:.1f}/10]"
+                justification = f"{justification}{cheating_note}"
+                logger.info(f"Applied cheating penalty: question_id={question_id}, penalty={cheating_penalty:.2f}")
 
             eval_item.update({
                 "correctness": correctness,
                 "depth": depth,
                 "reasoning": reasoning,
                 "clarity": clarity,
+                "relevance": relevance,
+                "practical_application": practical,
                 "overall_score": overall,
-                "justification": str(scores.get("correctness", {}).get("justification", "See details")), # Simplified justification handling
+                "justification": justification,
+                "expected_vs_actual_comparison": comparison,
+                "similarity_score": similarity,
+                "cheating_penalty": cheating_penalty,
+                "cheating_flagged": question_id in cheating_flag_map if question_id else False,
             })
-        except (json.JSONDecodeError, AttributeError, ValueError, TypeError):
+        except Exception as e:
+            logger.error(f"Rubric scoring failed: {e}")
             eval_item.update({
                 "correctness": 3,
                 "depth": 3,
                 "reasoning": 3,
                 "clarity": 3,
+                "relevance": 3,
+                "practical_application": 3,
                 "overall_score": 3.0,
                 "justification": "Scoring failed, default applied.",
+                "expected_vs_actual_comparison": "Evaluation failed.",
+                "similarity_score": 0.5,
+                "cheating_penalty": 0.0,
+                "cheating_flagged": False,
             })
 
         scored_evaluations.append(eval_item)

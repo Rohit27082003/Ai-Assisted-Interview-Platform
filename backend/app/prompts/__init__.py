@@ -16,10 +16,13 @@ Usage:
     result = await chain.ainvoke({...})
 """
 
-from .interview_prompts import (
+from .question_prompts import (
     QUESTION_GENERATION_PROMPT,
     FOLLOW_UP_QUESTION_PROMPT,
     FOLLOW_UP_DECISION_PROMPT,
+)
+
+from .orchestration_prompts import (
     PILLAR_TRANSITION_PROMPT,
     INTERVIEW_INTRODUCTION_PROMPT,
     INTERVIEW_CONCLUSION_PROMPT,

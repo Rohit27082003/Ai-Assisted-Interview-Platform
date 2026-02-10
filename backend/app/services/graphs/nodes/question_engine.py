@@ -32,7 +32,7 @@ from app.schemas.outputs.question_outputs import (
     QuestionGenerationOutput,
     FollowUpQuestionOutput,
 )
-from app.prompts import (
+from app.prompts.question_prompts import (
     QUESTION_GENERATION_PROMPT,
     FOLLOW_UP_QUESTION_PROMPT,
 )

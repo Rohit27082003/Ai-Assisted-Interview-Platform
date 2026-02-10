@@ -78,12 +78,14 @@ CONTEXT:
 - Candidate's Demonstrated Level: {candidate_demonstrated_level}
 
 CHEATING INDICATORS TO CHECK:
-1. QUESTION PARROTING: Does the answer simply repeat the question with minimal elaboration?
-2. UNNATURAL FLUENCY: Is the answer suspiciously polished, with perfect formatting or structure that suggests copy-pasting?
-3. VOCABULARY MISMATCH: Does the vocabulary/terminology level not match the candidate's demonstrated knowledge?
-4. RESPONSE TIMING: Was the response too fast for the complexity, or suspiciously well-formed for the time?
-5. CONSISTENCY: Is the quality dramatically different from previous answers?
-6. AI PATTERNS: Does it have hallmarks of AI-generated content (generic structure, hedging language, list format)?
+1. QUESTION REPETITION: Does the answer start by literally repeating/reading the question out loud instead of answering? (HIGH SEVERITY - indicates candidate is stalling or confused)
+2. QUESTION PARROTING: Does the answer simply repeat the question with minimal elaboration or actual content?
+3. UNNATURAL FLUENCY: Is the answer suspiciously polished, with perfect formatting or structure that suggests copy-pasting?
+4. VOCABULARY MISMATCH: Does the vocabulary/terminology level not match the candidate's demonstrated knowledge?
+5. RESPONSE TIMING: Was the response too fast for the complexity, or suspiciously well-formed for the time?
+6. CONSISTENCY: Is the quality dramatically different from previous answers?
+7. AI PATTERNS: Does it have hallmarks of AI-generated content (generic structure, hedging language, list format)?
+8. EXTERNAL HELP PATTERNS: Are there signs of someone feeding answers (long pauses mid-sentence, unnatural phrasing, sudden expertise jumps)?
 
 BE FAIR:
 - A strong candidate CAN give excellent answers - don't flag knowledge as cheating
@@ -95,10 +97,13 @@ OUTPUT FORMAT (JSON only, no markdown):
     "is_suspicious": true|false,
     "suspicion_score": 0.0-10.0,
     "pattern_flags": ["specific suspicious pattern 1", "pattern 2"],
+    "question_repetition_detected": true|false,
+    "question_repetition_score": 0.0-10.0,
     "question_parroting_score": 0.0-10.0,
     "unnatural_fluency_score": 0.0-10.0,
     "response_timing_flag": true|false,
     "vocabulary_mismatch": true|false,
+    "external_help_indicators": true|false,
     "confidence": 0.0-1.0,
     "reasoning": "Brief explanation of assessment",
     "recommended_action": "continue|warn|flag|escalate"

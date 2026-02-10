@@ -16,7 +16,8 @@ from app.prompts import (
     HIRING_RECOMMENDATION_PROMPT,
 )
 
-from app.core.llm import get_llm
+from app.core.llm import get_llm, get_structured_llm
+from app.schemas.outputs.reporting_outputs import PerformanceAnalysisOutput, HiringRecommendationOutput
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +29,7 @@ class ReportGraphState(TypedDict):
     interview_id: str
     candidate_id: str
     candidate_name: str
+    candidate_email: str
     jd_title: str
     jd_object: dict
     evaluations: List[Dict[str, Any]]
@@ -41,13 +43,18 @@ class ReportGraphState(TypedDict):
     summary: str
     detailed_feedback: Dict[str, Any]
     final_score: float
+    focus_areas: List[Dict[str, Any]]
+    total_questions_asked: int
+    interview_duration_minutes: float
+    hitl_database_key: str
+    transcript_summary: List[Dict[str, Any]]
 
 
 # ── Node Functions ────────────────────────────────────────────────
 
 async def analyze_performance_node(state: ReportGraphState) -> ReportGraphState:
     """Analyze interview performance to identify strengths and weaknesses."""
-    llm = get_llm()
+    llm = get_structured_llm(PerformanceAnalysisOutput)
 
     # Build evaluation summary
     eval_summary = ""
@@ -57,8 +64,10 @@ async def analyze_performance_node(state: ReportGraphState) -> ReportGraphState:
             f"Q: {ev.get('question', '')}\n"
             f"Score: {ev.get('overall_score', 0)}/5\n"
             f"Correctness: {ev.get('correctness', 0)}, Depth: {ev.get('depth', 0)}, "
-            f"Reasoning: {ev.get('reasoning', 0)}, Clarity: {ev.get('clarity', 0)}\n"
-            f"Justification: {ev.get('justification', '')}\n\n"
+            f"Reasoning: {ev.get('reasoning', 0)}, Clarity: {ev.get('clarity', 0)}, "
+            f"Relevance: {ev.get('relevance', 0)}, Practical: {ev.get('practical_application', 0)}\n"
+            f"Justification: {ev.get('justification', '')}\n"
+            f"Comparison: {ev.get('expected_vs_actual_comparison', '')}\n\n"
         )
 
     # Build prompt inputs
@@ -70,14 +79,15 @@ async def analyze_performance_node(state: ReportGraphState) -> ReportGraphState:
         "cheating_flags": str(state.get("cheating_flags", [])),
     }
 
-    response = await PERFORMANCE_ANALYSIS_PROMPT.ainvoke(prompt_inputs)
-
-    import json
+    chain = PERFORMANCE_ANALYSIS_PROMPT | llm
+    
     try:
-        analysis = json.loads(response.content)
-        state["strengths"] = analysis.get("strengths", [])
-        state["weaknesses"] = analysis.get("weaknesses", [])
-    except (json.JSONDecodeError, AttributeError):
+        response: PerformanceAnalysisOutput = await chain.ainvoke(prompt_inputs)
+        # Store as simple strings for compatibility with frontend/state expectation
+        state["strengths"] = [f"{s.area}: {s.observation}" for s in response.strengths]
+        state["weaknesses"] = [f"{w.area}: {w.observation}" for w in response.weaknesses]
+    except Exception as e:
+        logger.error(f"Performance analysis failed: {e}")
         state["strengths"] = []
         state["weaknesses"] = []
 
@@ -87,7 +97,7 @@ async def analyze_performance_node(state: ReportGraphState) -> ReportGraphState:
 
 async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphState:
     """Generate hire/no-hire/borderline recommendation with confidence score."""
-    llm = get_llm(temperature=0.1)
+    llm = get_structured_llm(HiringRecommendationOutput, temperature=0.1)
 
     cheating_summary = ""
     if state.get("cheating_flags"):
@@ -110,15 +120,17 @@ async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphSt
         "team_context": "General hiring context",
     }
 
-    response = await HIRING_RECOMMENDATION_PROMPT.ainvoke(prompt_inputs)
-
-    import json
+    chain = HIRING_RECOMMENDATION_PROMPT | llm
+    
     try:
-        rec = json.loads(response.content)
-        state["recommendation"] = rec.get("recommendation", "borderline")
-        state["confidence_score"] = float(rec.get("confidence_score", 0.5))
-        state["summary"] = rec.get("summary", "")
-    except (json.JSONDecodeError, AttributeError, ValueError):
+        response: HiringRecommendationOutput = await chain.ainvoke(prompt_inputs)
+        state["recommendation"] = response.recommendation
+        state["confidence_score"] = response.confidence
+        # Handle summary mapping - ensure default handles empty logic if model has optional
+        state["summary"] = response.summary or f"{response.recommendation.replace('_', ' ').title()} - {response.role_fit_rationale}"
+        
+    except Exception as e:
+        logger.error(f"Recommendation generation failed: {e}")
         # Fallback based on score
         avg = state.get("average_score", 0)
         has_penalty = any(
@@ -131,7 +143,7 @@ async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphSt
         else:
             state["recommendation"] = "borderline"
         state["confidence_score"] = 0.5
-        state["summary"] = "Automated recommendation based on scores."
+        state["summary"] = "Automated recommendation based on scores (fallback)."
 
     state["final_score"] = state.get("average_score", 0)
     logger.info(
@@ -142,28 +154,113 @@ async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphSt
 
 
 async def compile_report_node(state: ReportGraphState) -> ReportGraphState:
-    """Compile the full detailed report."""
+    """Compile the full comprehensive report with HITL database key."""
+    import uuid
+    from datetime import datetime
+
+    # Generate unique HITL (Human-In-The-Loop) database key for answer retrieval
+    hitl_key = f"HITL-{state.get('candidate_id', '')[:8]}-{state.get('interview_id', '')[:8]}-{uuid.uuid4().hex[:8]}"
+    state["hitl_database_key"] = hitl_key
+
+    # Build transcript summary
+    transcript_summary = []
+    for ev in state.get("evaluations", []):
+        transcript_summary.append({
+            "pillar": ev.get("pillar", ""),
+            "question": ev.get("question", ""),
+            "answer": ev.get("answer", ""),
+            "is_follow_up": ev.get("is_follow_up", False),
+            "score": ev.get("overall_score", 0),
+        })
+
+    state["transcript_summary"] = transcript_summary
+
+    # Compile detailed feedback with comprehensive information
     state["detailed_feedback"] = {
-        "pillar_scores": state.get("pillar_scores", {}),
-        "per_question": [
+        # Candidate Information
+        "candidate_details": {
+            "candidate_id": state.get("candidate_id", ""),
+            "candidate_name": state.get("candidate_name", ""),
+            "candidate_email": state.get("candidate_email", ""),
+            "interview_id": state.get("interview_id", ""),
+            "job_title": state.get("jd_title", ""),
+            "interview_duration_minutes": state.get("interview_duration_minutes", 0),
+            "total_questions_asked": state.get("total_questions_asked", 0),
+            "hitl_database_key": hitl_key,
+            "report_generated_at": datetime.utcnow().isoformat(),
+        },
+
+        # Focus Areas/Topics Covered
+        "focus_areas_covered": state.get("focus_areas", []),
+
+        # Overall Performance
+        "performance_summary": {
+            "final_score": state.get("final_score", 0),
+            "average_score": state.get("average_score", 0),
+            "pillar_scores": state.get("pillar_scores", {}),
+            "recommendation": state.get("recommendation", ""),
+            "confidence": state.get("confidence_score", 0),
+            "summary": state.get("summary", ""),
+        },
+
+        # Strengths and Weaknesses
+        "analysis": {
+            "strengths": state.get("strengths", []),
+            "weaknesses": state.get("weaknesses", []),
+        },
+
+        # Per-Question Evaluation
+        "per_question_evaluation": [
             {
+                "question_number": idx + 1,
                 "pillar": ev.get("pillar", ""),
                 "question": ev.get("question", ""),
-                "correctness": ev.get("correctness", 0),
-                "depth": ev.get("depth", 0),
-                "reasoning": ev.get("reasoning", 0),
-                "clarity": ev.get("clarity", 0),
-                "overall": ev.get("overall_score", 0),
+                "answer": ev.get("answer", "")[:200] + "..." if len(ev.get("answer", "")) > 200 else ev.get("answer", ""),
+                "is_follow_up": ev.get("is_follow_up", False),
+                "scores": {
+                    "correctness": ev.get("correctness", 0),
+                    "depth": ev.get("depth", 0),
+                    "reasoning": ev.get("reasoning", 0),
+                    "clarity": ev.get("clarity", 0),
+                    "relevance": ev.get("relevance", 0),
+                    "practical_application": ev.get("practical_application", 0),
+                    "overall": ev.get("overall_score", 0),
+                },
                 "justification": ev.get("justification", ""),
+                "expected_vs_actual_comparison": ev.get("expected_vs_actual_comparison", ""),
+                "similarity_score": ev.get("similarity_score", 0.0),
+                "cheating_flagged": ev.get("cheating_flagged", False),
+                "cheating_penalty": ev.get("cheating_penalty", 0.0),
             }
-            for ev in state.get("evaluations", [])
+            for idx, ev in enumerate(state.get("evaluations", []))
         ],
-        "cheating_analysis": {
+
+        # Cheating/Integrity Analysis
+        "integrity_analysis": {
             "total_flags": len(state.get("cheating_flags", [])),
-            "flags": state.get("cheating_flags", []),
+            "has_violations": len(state.get("cheating_flags", [])) > 0,
+            "flags_detail": state.get("cheating_flags", []),
+            "integrity_status": "clean" if len(state.get("cheating_flags", [])) == 0
+                              else "warning" if len(state.get("cheating_flags", [])) <= 2
+                              else "serious_concern",
+        },
+
+        # Recruiter Decision Support
+        "recruiter_insights": {
+            "hire_recommendation": state.get("recommendation", ""),
+            "confidence_level": state.get("confidence_score", 0),
+            "key_strengths": state.get("strengths", [])[:3],  # Top 3
+            "key_concerns": state.get("weaknesses", [])[:3],  # Top 3
+            "fitment_score": state.get("final_score", 0),
+            "decision_factors": [
+                f"Average performance: {state.get('average_score', 0):.1f}/5",
+                f"Questions answered: {state.get('total_questions_asked', 0)}",
+                f"Integrity flags: {len(state.get('cheating_flags', []))}",
+            ],
         },
     }
-    logger.info(f"Report compiled for interview {state['interview_id']}")
+
+    logger.info(f"Comprehensive report compiled for interview {state['interview_id']} with HITL key: {hitl_key}")
     return state
 
 

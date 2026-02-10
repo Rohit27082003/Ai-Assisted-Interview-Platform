@@ -17,13 +17,15 @@ NO keyword matching. Semantic only.
 """
 
 from typing import TypedDict, List, Dict, Any, Optional
+from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 
-from app.core.llm import get_llm
+from app.core.llm import get_llm, get_structured_llm
 from app.services.vector_store.chroma_service import get_chroma_service
 from app.core.logging import get_logger
 from app.prompts.resume_prompts import RESUME_PARSER_PROMPT, RESUME_ANALYSIS_PROMPT
+from app.schemas.outputs.resume_outputs import ResumeData, ScoringDetails
 
 logger = get_logger(__name__)
 
@@ -52,19 +54,26 @@ class ResumeGraphState(TypedDict):
 
 async def parse_resume_node(state: ResumeGraphState) -> ResumeGraphState:
     """Extract structured information from resume text using LLM."""
-    llm = get_llm()
+    # Use structured LLM for strict schema validation
+    llm = get_structured_llm(ResumeData)
     prompt = RESUME_PARSER_PROMPT
     chain = prompt | llm
-    response = await chain.ainvoke({"resume_text": state["resume_text"][:8000]})
-    import json
+
+    # Get current date for accurate date interpretation
+    current_date = datetime.now().strftime("%B %d, %Y")  # e.g., "February 10, 2026"
+
     try:
-        parsed = json.loads(response.content)
-        state["chunk_metadata"] = [parsed]
+        parsed_data: ResumeData = await chain.ainvoke({
+            "resume_text": state["resume_text"][:8000],
+            "current_date": current_date
+        })
+        # Convert Pydantic model to dict for state storage
+        state["chunk_metadata"] = [parsed_data.model_dump()]
         logger.info(f"Resume parsed successfully for {state['candidate_id']}")
-    except (json.JSONDecodeError, AttributeError):
-        logger.error(f"Failed to parse resume JSON for {state['candidate_id']}")
+    except Exception as e:
+        logger.error(f"Failed to parse resume JSON for {state['candidate_id']}: {e}")
         state["chunk_metadata"] = [{"skills": [], "projects": [], "experience_years": 0}]
-    
+
     return state
 
 
@@ -113,40 +122,37 @@ async def embed_resume_node(state: ResumeGraphState) -> ResumeGraphState:
 
 async def semantic_match_node(state: ResumeGraphState) -> ResumeGraphState:
     """Perform semantic matching between resume and JD across dimensions."""
-    llm = get_llm()
     jd_obj = state["jd_object"]
     resume_text_short = state["resume_text"][:6000] # Increased context window
 
+    # Use structured LLM for strict schema validation
+    llm = get_structured_llm(ScoringDetails)
     prompt = RESUME_ANALYSIS_PROMPT
     chain = prompt | llm
     
-    response = await chain.ainvoke({
-        "must_have_skills": str(jd_obj.get("must_have_skills", [])),
-        "good_to_have": str(jd_obj.get("good_to_have", [])),
-        "role": jd_obj.get("role", ""),
-        "experience_range": jd_obj.get("experience_range", ""),
-        "tools": str(jd_obj.get("tools", [])),
-        "resume_text": resume_text_short,
-    })
-
-    import json
     try:
-        content = response.content.replace("```json", "").replace("```", "").strip()
-        logger.info(f"Raw LLM Response for {state['candidate_id']}: {content}")
-        scores = json.loads(content)
-        
+        scores: ScoringDetails = await chain.ainvoke({
+            "must_have_skills": str(jd_obj.get("must_have_skills", [])),
+            "good_to_have": str(jd_obj.get("good_to_have", [])),
+            "role": jd_obj.get("role", ""),
+            "experience_range": jd_obj.get("experience_range", ""),
+            "tools": str(jd_obj.get("tools", [])),
+            "resume_text": resume_text_short,
+            "current_date": datetime.now().strftime("%B %d, %Y"),
+        })
+
         # Normalize 0-100 scale to 0.0-1.0
-        state["skills_score"] = float(scores.get("skills_score", 0)) / 100.0
-        state["projects_score"] = float(scores.get("projects_score", 0)) / 100.0
-        state["experience_score"] = float(scores.get("experience_score", 0)) / 100.0
-        state["tooling_score"] = float(scores.get("tooling_score", 0)) / 100.0
+        state["skills_score"] = float(scores.skills_score) / 100.0
+        state["projects_score"] = float(scores.projects_score) / 100.0
+        state["experience_score"] = float(scores.experience_score) / 100.0
+        state["tooling_score"] = float(scores.tooling_score) / 100.0
         
-        # Keep detailed reasoning
-        state["scoring_details"] = scores
+        # Keep detailed reasoning (dump model to dict)
+        state["scoring_details"] = scores.model_dump()
         
-        logger.info(f"Semantic match: {scores.get('overall_match_confidence')}% confidence")
-    except (json.JSONDecodeError, AttributeError, ValueError) as e:
-        logger.error(f"Failed to parse semantic match scores: {e}. Raw content: {response.content}")
+        logger.info(f"Semantic match: {scores.overall_match_confidence}% confidence")
+    except Exception as e:
+        logger.error(f"Failed to parse semantic match scores: {e}")
         state["skills_score"] = 0.0
         state["projects_score"] = 0.0
         state["experience_score"] = 0.0

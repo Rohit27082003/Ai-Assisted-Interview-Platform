@@ -8,8 +8,9 @@ from typing import TypedDict, List, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 
-from app.core.llm import get_llm
+from app.core.llm import get_llm, get_structured_llm
 from app.schemas.schemas import FocusArea
+from app.schemas.outputs.focus_area_outputs import FocusAreaListOutput
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -26,56 +27,31 @@ class FocusAreaGraphState(TypedDict):
     reasoning_trace: str
 
 
+
 # ── Node Functions ────────────────────────────────────────────────
 
 async def analyze_overlap_node(state: FocusAreaGraphState) -> FocusAreaGraphState:
     """Analyze the overlap between JD requirements and resume to identify probe areas."""
-    llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are the "Focus Area Selection Agent" for a technical interview.
-Your goal is to identify exactly 4-5 critical "pillars" for the interview.
-
-Guidelines:
-1. Select 4-5 meaningful skill topics that exist in BOTH the JD and the Resume.
-2. DO NOT select random topics. Every topic must be justified by specific evidence from the resume.
-3. Prioritize:
-    - Core Competencies required by the JD.
-    - Critical Evaluation Areas (e.g., complex projects, specific tools).
-4. For each topic, the "reason" must explicitly state the provenance:
-    - "JD requires X; Resume shows usage in Project Y."
-    - "Critical skill X mentioned in Resume summary."
-
-JD Requirements:
-- Role: {role}
-- Must-have skills: {must_have_skills}
-- Tools: {tools}
-- Competencies: {competencies}
-
-Return ONLY a JSON array of objects with keys "skill" and "reason".
-Example: [{{"skill": "React.js", "reason": "JD requires React; Candidate used it in 'E-commerce' project."}}]
-Limit to exactly 4-5 items. Do not include any markdown formatting."""),
-        ("human", "Candidate Resume:\n{resume_text}"),
-    ])
-
+    from app.prompts.focus_area_prompts import FOCUS_AREA_ANALYSIS_PROMPT
+    llm = get_structured_llm(FocusAreaListOutput)
+    
     jd = state["jd_object"]
-    chain = prompt | llm
-    response = await chain.ainvoke({
-        "role": jd.get("role", ""),
-        "must_have_skills": str(jd.get("must_have_skills", [])),
-        "tools": str(jd.get("tools", [])),
-        "competencies": str(jd.get("competencies", [])),
-        "experience_range": jd.get("experience_range", ""),
-        "resume_text": state["resume_text"][:6000],
-    })
-
-    import json
+    chain = FOCUS_AREA_ANALYSIS_PROMPT | llm
+    
     try:
-        areas = json.loads(response.content)
-        if isinstance(areas, list):
-            state["focus_areas"] = areas[:5]
-        else:
-            state["focus_areas"] = []
-    except (json.JSONDecodeError, AttributeError):
+        response: FocusAreaListOutput = await chain.ainvoke({
+            "role": jd.get("role", ""),
+            "must_have_skills": str(jd.get("must_have_skills", [])),
+            "tools": str(jd.get("tools", [])),
+            "competencies": str(jd.get("competencies", [])),
+            "experience_range": jd.get("experience_range", ""),
+            "resume_text": state["resume_text"][:6000],
+        })
+        
+        # Convert Pydantic models to dicts for state
+        state["focus_areas"] = [fa.model_dump() for fa in response.focus_areas]
+    except Exception as e:
+        logger.error(f"Failed to generate focus areas: {e}")
         state["focus_areas"] = []
 
     logger.info(f"Focus areas identified: {len(state['focus_areas'])} for candidate {state['candidate_id']}")
@@ -86,29 +62,24 @@ async def validate_focus_node(state: FocusAreaGraphState) -> FocusAreaGraphState
     """Validate and refine focus areas to ensure they are interview-worthy."""
     if len(state["focus_areas"]) < 3:
         # Fallback: generate generic focus areas from JD
-        llm = get_llm()
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """Generate 4 technical interview focus areas based on this job description.
-Return ONLY a JSON array of objects with "skill" and "reason" keys.
-Do not include any markdown formatting."""),
-            ("human", "JD: {jd_text}"),
-        ])
-        chain = prompt | llm
+        from app.prompts.focus_area_prompts import FOCUS_AREA_FALLBACK_PROMPT
+        llm = get_structured_llm(FocusAreaListOutput)
+        chain = FOCUS_AREA_FALLBACK_PROMPT | llm
         jd = state["jd_object"]
-        response = await chain.ainvoke({
-            "jd_text": str(jd),
-        })
-        import json
+        
         try:
-            areas = json.loads(response.content)
-            state["focus_areas"] = areas[:5]
-        except (json.JSONDecodeError, AttributeError):
+            response: FocusAreaListOutput = await chain.ainvoke({
+                "jd_text": str(jd),
+            })
+            state["focus_areas"] = [fa.model_dump() for fa in response.focus_areas][:5]
+        except Exception as e:
+            logger.error(f"Fallback focus generation failed: {e}")
             # Last resort fallback
             skills = state["jd_object"].get("must_have_skills", [])
             state["focus_areas"] = [
                 {"skill": s, "reason": "Core JD requirement"} for s in skills[:4]
             ]
-
+            
     state["reasoning_trace"] = f"Selected {len(state['focus_areas'])} focus areas"
     logger.info(f"Focus areas validated for candidate {state['candidate_id']}")
     return state

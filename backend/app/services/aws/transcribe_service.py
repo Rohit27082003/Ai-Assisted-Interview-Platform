@@ -90,13 +90,20 @@ class TranscribeStreamService:
         if not stream:
             return ""
 
+        # If already inactive (e.g. error/timeout), return what we have
+        if not stream["is_active"]:
+            logger.info(f"Stream {stream_id} already inactive, returning partial text")
+            return stream.get("final_text", "").strip()
+
         stream["is_active"] = False
-        # Signal EOF to generator
-        await stream["queue"].put(None)
+        try:
+            # Signal EOF
+            if not stream["queue"].empty() or not stream["queue"].closed:
+                 await stream["queue"].put(None)
+        except Exception:
+            pass
         
-        # In a real scenario, we might want to wait for the processing task to finish 
-        # via a completion event or similar. For now we return what we have.
-        # Give a small buffer for final events to flush
+        # Wait briefly for processing to finish, but don't hang
         await asyncio.sleep(0.5) 
         
         final_text = stream["final_text"].strip()
@@ -114,24 +121,43 @@ class TranscribeStreamService:
         if not stream:
             return
 
-        client = TranscribeStreamingClient(
-            region=settings.AWS_REGION,
-        )
+        # Check AWS credentials
+        if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+            logger.error(f"AWS credentials not configured! Cannot start transcription for {stream_id}")
+            stream["is_active"] = False
+            return
+
+        try:
+            client = TranscribeStreamingClient(
+                region=settings.AWS_REGION,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create TranscribeStreamingClient: {e}")
+            stream["is_active"] = False
+            return
 
         async def audio_generator():
             while stream["is_active"]:
-                chunk = await stream["queue"].get()
-                if chunk is None:
+                try:
+                    chunk = await asyncio.wait_for(stream["queue"].get(), timeout=5.0)
+                    if chunk is None:
+                        break
+                    yield chunk
+                except asyncio.TimeoutError:
+                    # No data for 5 seconds, continue waiting
+                    continue
+                except Exception as e:
+                    logger.error(f"Audio generator error: {e}")
                     break
-                yield chunk
 
         try:
-            # Note: We assume ogg-opus because frontend sends webm (which is usually opus). 
-            # If this fails, consider 'pcm' or valid conversions.
+            # Use ogg-opus (AWS Transcribe supported format)
+            # Browser WebRTC typically outputs webm, but AWS only accepts ogg-opus
+            # The frontend should send audio as ogg-opus or we need conversion
             aws_stream = await client.start_stream_transcription(
-                language_code="en-US",
-                media_sample_rate_hz=48000, 
-                media_encoding="ogg-opus",
+                language_code=settings.TRANSCRIBE_LANGUAGE_CODE,
+                media_sample_rate_hz=settings.TRANSCRIBE_SAMPLE_RATE,
+                media_encoding="ogg-opus",  # AWS only supports: flac, g711-ulaw, g729, pcm, ogg-opus, g711-alaw
             )
             
             handler = InterviewEventHandler(aws_stream.output_stream, stream)
@@ -142,11 +168,19 @@ class TranscribeStreamService:
                 await aws_stream.input_stream.end_stream()
 
             await asyncio.gather(write_audio(), handler.handle_events())
-            
+
         except Exception as e:
-            logger.error(f"AWS Transcribe stream error for {stream_id}: {e}")
+            logger.error(f"AWS Transcribe stream error for {stream_id}: {e}", exc_info=True)
             # Ensure we mark stream as inactive so we don't leak
             stream["is_active"] = False
+
+            # If transcription fails, we still want to preserve any partial text we got
+            if stream.get("final_text"):
+                logger.info(f"Preserved partial transcription for {stream_id}: {len(stream['final_text'])} chars")
+        finally:
+            # Clean up stream resources
+            if stream_id in self._active_streams:
+                logger.debug(f"Cleaning up stream resources for {stream_id}")
 
     async def force_stop_after(self, stream_id: str, seconds: int) -> str:
         """Auto-close transcription stream after timeout (server-side timer)."""
@@ -154,5 +188,13 @@ class TranscribeStreamService:
         return await self.stop_stream(stream_id)
 
 
+# Singleton instance to maintain streams across requests
+_transcribe_service: Optional[TranscribeStreamService] = None
+
 def get_transcribe_service() -> TranscribeStreamService:
-    return TranscribeStreamService()
+    """Get the global transcribe service instance (singleton)."""
+    global _transcribe_service
+    if _transcribe_service is None:
+        _transcribe_service = TranscribeStreamService()
+        logger.info("Initialized singleton TranscribeStreamService")
+    return _transcribe_service

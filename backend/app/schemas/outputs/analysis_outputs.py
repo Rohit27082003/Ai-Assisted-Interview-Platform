@@ -155,9 +155,21 @@ class CheatingDetectionOutput(BaseModel):
     )
 
     # Individual checks
+    question_repetition_detected: bool = Field(
+        default=False,
+        description="Whether candidate repeated the question out loud instead of answering",
+    )
+
+    question_repetition_score: float = Field(
+        default=0.0,
+        description="How much the answer starts by literally repeating the question (0-10, higher is worse)",
+        ge=0,
+        le=10,
+    )
+
     question_parroting_score: float = Field(
         default=0.0,
-        description="How much the answer mirrors the question (0-10)",
+        description="How much the answer mirrors the question with minimal content (0-10)",
         ge=0,
         le=10,
     )
@@ -177,6 +189,11 @@ class CheatingDetectionOutput(BaseModel):
     vocabulary_mismatch: bool = Field(
         default=False,
         description="Whether vocabulary doesn't match candidate's level",
+    )
+
+    external_help_indicators: bool = Field(
+        default=False,
+        description="Signs of external help (dictation, feeding answers, etc.)",
     )
 
     # Analysis

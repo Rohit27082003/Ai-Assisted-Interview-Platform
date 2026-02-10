@@ -108,3 +108,7 @@ class InterviewState(TypedDict, total=False):
     created_at: str  # ISO timestamp
     updated_at: str  # ISO timestamp
     version: int  # For optimistic locking
+
+    # ─── Ephemeral / Injected (Not persisted or transient) ────────────────────
+    _injected_answer_text: Optional[str]
+    _injected_audio_url: Optional[str]

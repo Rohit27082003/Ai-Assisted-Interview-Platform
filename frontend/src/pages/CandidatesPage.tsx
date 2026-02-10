@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Upload, Filter, Play, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye, BarChart2
+  Plus, Upload, Filter, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye, BarChart2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { candidateApi, jdApi, interviewApi } from '../services/api';
 import type { JobDescription, Candidate, ShortlistResponse, FocusArea } from '../types';
+import ActionMenu from '../components/common/ActionMenu';
+import type { ActionMenuEntry } from '../components/common/ActionMenu';
 
 interface CandidateSession {
   candidate_id: string;
@@ -90,7 +92,16 @@ export default function CandidatesPage() {
 
       if (resumeFile) {
         await candidateApi.uploadResume(candidate.candidate_id, resumeFile);
-        toast.success('Candidate created and resume uploaded');
+        toast.success('Candidate created. Starting AI analysis...');
+
+        // Auto-run shortlisting for immediate feedback
+        try {
+          const result = await candidateApi.shortlist(selectedJDId, threshold);
+          setShortlistResult(result);
+          toast.success(`Analysis complete: ${result.shortlisted.length} shortlisted`);
+        } catch {
+          toast.error('Auto-analysis failed, please run Shortlisting manually');
+        }
       } else {
         toast.success('Candidate created');
       }
@@ -124,6 +135,7 @@ export default function CandidatesPage() {
 
   const handleRerunShortlist = async () => {
     if (!selectedJDId) return;
+    console.log('🔍 DEBUG: Calling rerunShortlist with JD ID:', selectedJDId, 'threshold:', threshold);
     setActionLoading((p) => ({ ...p, rerun: true }));
     try {
       const result = await candidateApi.rerunShortlist(selectedJDId, threshold);
@@ -131,6 +143,7 @@ export default function CandidatesPage() {
       await loadCandidates(selectedJDId);
       toast.success(`Re-shortlisted with threshold ${(threshold * 100).toFixed(0)}%: ${result.shortlisted.length} shortlisted`);
     } catch (err: unknown) {
+      console.error('❌ DEBUG: Rerun shortlist failed:', err);
       const message = err instanceof Error ? err.message : 'Re-shortlisting failed';
       toast.error(message);
     } finally {
@@ -158,13 +171,21 @@ export default function CandidatesPage() {
     toast.success('Copied to clipboard!');
   };
 
-  const handleDeleteCandidate = async (candidateId: string) => {
-    if (!window.confirm('Are you sure you want to delete this candidate?')) return;
+  const [deleteModal, setDeleteModal] = useState<{ isOpen: true, candidateId: string, name: string } | null>(null);
+
+  const handleDeleteClick = (candidateId: string, candidateName: string) => {
+    setDeleteModal({ isOpen: true, candidateId, name: candidateName });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteModal) return;
+    const { candidateId } = deleteModal;
 
     setActionLoading((p) => ({ ...p, [candidateId + '_delete']: true }));
     try {
       await candidateApi.delete(candidateId);
       toast.success('Candidate deleted');
+      setDeleteModal(null);
       await loadCandidates(selectedJDId);
     } catch {
       toast.error('Failed to delete candidate');
@@ -196,6 +217,19 @@ export default function CandidatesPage() {
       toast.error('Failed to start interview');
     } finally {
       setActionLoading((p) => ({ ...p, [candidateId + '_interview']: false }));
+    }
+  };
+
+  const handleInviteCandidate = async (candidateId: string) => {
+    setActionLoading((p) => ({ ...p, [candidateId + '_invite']: true }));
+    try {
+      await candidateApi.createSession(candidateId);
+      toast.success('Invitation email sent');
+      await loadCandidates(selectedJDId);
+    } catch {
+      toast.error('Failed to send invitation');
+    } finally {
+      setActionLoading((p) => ({ ...p, [candidateId + '_invite']: false }));
     }
   };
 
@@ -510,74 +544,74 @@ export default function CandidatesPage() {
                             <span className="text-xs text-gray-400">-</span>
                           )}
                         </td>
-                        <td className="py-3">
-                          <div className="flex gap-2">
-                            {/* Analysis Button */}
-                            <button
-                              className="text-sm btn-secondary flex items-center gap-1 text-primary-600"
-                              onClick={() => navigate(`/candidate/${c.candidate_id}/analysis`)}
-                              title="View Analysis"
-                            >
-                              <BarChart2 className="w-3 h-3" />
-                              Analysis
-                            </button>
+                        <td className="py-3 text-right">
+                          {(() => {
+                            // Build action items dynamically based on candidate status
+                            const items: ActionMenuEntry[] = [
+                              { label: 'View Analysis', icon: BarChart2, onClick: () => navigate(`/candidate/${c.candidate_id}/analysis`) },
+                              {
+                                label: 'View Resume',
+                                icon: FileText,
+                                onClick: async () => {
+                                  try {
+                                    const result = await candidateApi.getResumeUrl(c.candidate_id);
+                                    window.open(result.download_url, '_blank');
+                                  } catch {
+                                    toast.error('Resume not available');
+                                  }
+                                },
+                              },
+                            ];
 
-                            {/* View Resume button */}
-                            <button
-                              className="text-sm btn-secondary flex items-center gap-1"
-                              onClick={async () => {
-                                try {
-                                  const result = await candidateApi.getResumeUrl(c.candidate_id);
-                                  window.open(result.download_url, '_blank');
-                                } catch {
-                                  toast.error('Resume not available');
-                                }
-                              }}
-                              title="View Resume"
-                            >
-                              <FileText className="w-3 h-3" />
-                              Resume
-                            </button>
-                            {c.status === 'shortlisted' && (
-                              <button
-                                className="text-sm btn-secondary flex items-center gap-1"
-                                onClick={() => handleFocusAreas(c.candidate_id)}
-                                disabled={actionLoading[c.candidate_id + '_focus']}
-                              >
-                                <Target className="w-3 h-3" />
-                                {actionLoading[c.candidate_id + '_focus']
-                                  ? 'Generating...'
-                                  : 'Focus Areas'}
-                              </button>
-                            )}
-                            {/* Interview button removed for recruiters */}
-                            {['interviewed', 'evaluated', 'reported'].includes(c.status) && (
-                              <button
-                                className="text-sm btn-secondary"
-                                onClick={() => navigate(`/report/${c.interview_id}`)}
-                              >
-                                View Report
-                              </button>
-                            )}
-                            {c.interview_id && (
-                              <button
-                                className="text-sm btn-secondary flex items-center gap-1"
-                                onClick={() => navigate(`/transcript/${c.interview_id}`)}
-                                title="View Transcript"
-                              >
-                                <FileText className="w-3 h-3" />
-                                Transcript
-                              </button>
-                            )}
-                            <button
-                              className="text-sm btn-secondary text-red-600 hover:text-red-700 hover:bg-red-50"
-                              onClick={() => handleDeleteCandidate(c.candidate_id)}
-                              disabled={actionLoading[c.candidate_id + '_delete']}
-                              title="Delete Candidate"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
+                            if (c.status === 'shortlisted') {
+                              items.push({
+                                label: 'Focus Areas',
+                                icon: Target,
+                                onClick: () => handleFocusAreas(c.candidate_id),
+                                disabled: actionLoading[c.candidate_id + '_focus'],
+                                loadingLabel: 'Generating…',
+                              });
+                            }
+
+                            if (c.status === 'focus_ready') {
+                              items.push({
+                                label: 'Send Invite',
+                                icon: Key,
+                                onClick: () => handleInviteCandidate(c.candidate_id),
+                                disabled: actionLoading[c.candidate_id + '_invite'],
+                                loadingLabel: 'Sending…',
+                              });
+                            }
+
+                            if (['interviewed', 'evaluated', 'reported'].includes(c.status)) {
+                              items.push({
+                                label: 'View Report',
+                                icon: BarChart2,
+                                onClick: () => navigate(`/report/${c.interview_id}`),
+                              });
+                            }
+
+                            if (c.interview_id) {
+                              items.push({
+                                label: 'Transcript',
+                                icon: FileText,
+                                onClick: () => navigate(`/transcript/${c.interview_id}`),
+                              });
+                            }
+
+                            // Separator before destructive action
+                            items.push({ type: 'divider' });
+                            items.push({
+                              label: 'Delete',
+                              icon: Trash2,
+                              onClick: () => handleDeleteClick(c.candidate_id, c.name),
+                              variant: 'danger',
+                              disabled: actionLoading[c.candidate_id + '_delete'],
+                              loadingLabel: 'Deleting…',
+                            });
+
+                            return <ActionMenu items={items} />;
+                          })()}
                         </td>
                       </tr>
                       {/* Expanded Focus Areas Row */}
@@ -616,6 +650,59 @@ export default function CandidatesPage() {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+          <div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            {/* Background overlay */}
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              aria-hidden="true"
+              onClick={() => setDeleteModal(null)}
+            ></div>
+
+            {/* Modal panel */}
+            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+            <div className="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+              <div className="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div className="sm:flex sm:items-start">
+                  <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
+                    <Trash2 className="h-6 w-6 text-red-600" aria-hidden="true" />
+                  </div>
+                  <div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                    <h3 className="text-lg leading-6 font-medium text-gray-900 dark:text-white" id="modal-title">
+                      Delete Candidate
+                    </h3>
+                    <div className="mt-2">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        Are you sure you want to delete <span className="font-semibold">{deleteModal.name}</span>? This action cannot be undone.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-gray-50 dark:bg-gray-700 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <button
+                  type="button"
+                  className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm"
+                  onClick={confirmDelete}
+                  disabled={actionLoading[deleteModal.candidateId + '_delete']}
+                >
+                  {actionLoading[deleteModal.candidateId + '_delete'] ? 'Deleting...' : 'Delete'}
+                </button>
+                <button
+                  type="button"
+                  className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+                  onClick={() => setDeleteModal(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div >
   );
 }

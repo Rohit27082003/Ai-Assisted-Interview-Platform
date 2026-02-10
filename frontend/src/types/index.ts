@@ -90,7 +90,7 @@ export interface InterviewQuestion {
 }
 
 export interface WSMessage {
-  type: 'question' | 'timer' | 'cheating_warning' | 'complete' | 'error' | 'terminated' | 'restore_state' | 'transcript_partial';
+  type: 'question' | 'timer' | 'cheating_warning' | 'warning' | 'complete' | 'error' | 'terminated' | 'restore_state' | 'transcript_partial';
   data: Record<string, any>;
 }
 

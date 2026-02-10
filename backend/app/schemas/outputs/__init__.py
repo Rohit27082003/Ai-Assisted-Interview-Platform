@@ -21,13 +21,11 @@ from .analysis_outputs import (
 )
 from .evaluation_outputs import (
     ReferenceAnswerOutput,
-    RubricScoringOutput,
-    EvaluationAggregateOutput,
+    RubricScoreOutput,
 )
 from .reporting_outputs import (
     PerformanceAnalysisOutput,
-    RecommendationOutput,
-    FinalReportOutput,
+    HiringRecommendationOutput,
 )
 
 __all__ = [
@@ -39,10 +37,8 @@ __all__ = [
     "CheatingDetectionOutput",
     # Evaluation
     "ReferenceAnswerOutput",
-    "RubricScoringOutput",
-    "EvaluationAggregateOutput",
+    "RubricScoreOutput",
     # Reporting
     "PerformanceAnalysisOutput",
-    "RecommendationOutput",
-    "FinalReportOutput",
+    "HiringRecommendationOutput",
 ]

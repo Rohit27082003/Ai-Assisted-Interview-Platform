@@ -23,6 +23,7 @@ class S3Service:
     async def upload_resume(self, file_bytes: bytes, filename: str, candidate_id: str) -> str:
         """Upload resume to S3 and return URL."""
         ext = filename.rsplit(".", 1)[-1] if "." in filename else "pdf"
+        # User requested 'resume' folder
         key = f"resumes/{candidate_id}/{uuid.uuid4()}.{ext}"
         try:
             self.s3_client.put_object(
@@ -41,7 +42,8 @@ class S3Service:
 
     async def upload_audio(self, audio_bytes: bytes, interview_id: str, seq: int) -> str:
         """Upload raw audio chunk to S3."""
-        key = f"raw-audio/{interview_id}/{seq:06d}.webm"
+        # User requested 'audios' folder
+        key = f"audios/{interview_id}/{seq:06d}.webm"
         try:
             self.s3_client.put_object(
                 Bucket=self.bucket,

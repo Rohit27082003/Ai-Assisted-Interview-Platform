@@ -15,6 +15,7 @@ from langgraph.graph import StateGraph, END
 
 from app.core.llm import get_llm, get_structured_llm
 from app.schemas.schemas import JDObject
+from app.schemas.outputs.jd_outputs import JDParsingOutput, SkillExtractionOutput, CompetencyMappingOutput
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,83 +35,62 @@ class JDGraphState(TypedDict):
     jd_object: dict
 
 
+
 # ── Node Functions ────────────────────────────────────────────────
 
 async def jd_parser_node(state: JDGraphState) -> JDGraphState:
     """Parse the JD and extract the role description."""
-    llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert HR job description analyst.
-Parse the following job description and extract the core role title and description.
-Return ONLY a JSON object with keys: "role" (string), "description" (string).
-Do not include any markdown formatting or extra text."""),
-        ("human", "{jd_text}"),
-    ])
-    chain = prompt | llm
-    response = await chain.ainvoke({"jd_text": state["raw_text"]})
-    import json
+    from app.prompts.jd_prompts import JD_PARSER_PROMPT
+    llm = get_structured_llm(JDParsingOutput)
+    chain = JD_PARSER_PROMPT | llm
+    
     try:
-        parsed = json.loads(response.content)
-        state["parsed_role"] = parsed.get("role", state["title"])
-    except (json.JSONDecodeError, AttributeError):
+        response: JDParsingOutput = await chain.ainvoke({"jd_text": state["raw_text"]})
+        state["parsed_role"] = response.role
+    except Exception as e:
+        logger.error(f"JD parsing failed: {e}")
         state["parsed_role"] = state["title"]
+        
     logger.info(f"JD parsed: role={state['parsed_role']}")
     return state
 
 
 async def skill_extractor_node(state: JDGraphState) -> JDGraphState:
     """Extract must-have and good-to-have skills from the JD."""
-    llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a technical skills extraction specialist.
-From the job description below, extract:
-1. must_have_skills: Skills that are explicitly required or mandatory
-2. good_to_have: Skills that are preferred, optional, or "nice to have"
-
-Return ONLY a JSON object with keys: "must_have_skills" (list of strings), "good_to_have" (list of strings).
-Be specific with skill names. Do not include any markdown formatting."""),
-        ("human", "{jd_text}"),
-    ])
-    chain = prompt | llm
-    response = await chain.ainvoke({"jd_text": state["raw_text"]})
-    import json
+    from app.prompts.jd_prompts import SKILL_EXTRACTION_PROMPT
+    llm = get_structured_llm(SkillExtractionOutput)
+    chain = SKILL_EXTRACTION_PROMPT | llm
+    
     try:
-        parsed = json.loads(response.content)
-        state["must_have_skills"] = parsed.get("must_have_skills", [])
-        state["good_to_have"] = parsed.get("good_to_have", [])
-    except (json.JSONDecodeError, AttributeError):
+        response: SkillExtractionOutput = await chain.ainvoke({"jd_text": state["raw_text"]})
+        state["must_have_skills"] = response.must_have_skills
+        state["good_to_have"] = response.good_to_have
+    except Exception as e:
+        logger.error(f"Skill extraction failed: {e}")
         state["must_have_skills"] = []
         state["good_to_have"] = []
+        
     logger.info(f"Skills extracted: must_have={len(state['must_have_skills'])}, good_to_have={len(state['good_to_have'])}")
     return state
 
 
 async def competency_mapper_node(state: JDGraphState) -> JDGraphState:
     """Map competencies, tools, and experience requirements."""
-    llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an HR competency mapping expert.
-From the job description, extract:
-1. experience_range: e.g., "3-5 years" or "5+ years"
-2. tools: Specific tools, frameworks, platforms mentioned
-3. competencies: Soft skills, leadership qualities, domain competencies
-
-Return ONLY a JSON with keys: "experience_range" (string), "tools" (list of strings), "competencies" (list of strings).
-Do not include any markdown formatting."""),
-        ("human", "{jd_text}"),
-    ])
-    chain = prompt | llm
-    response = await chain.ainvoke({"jd_text": state["raw_text"]})
-    import json
+    from app.prompts.jd_prompts import COMPETENCY_MAPPING_PROMPT
+    llm = get_structured_llm(CompetencyMappingOutput)
+    chain = COMPETENCY_MAPPING_PROMPT | llm
+    
     try:
-        parsed = json.loads(response.content)
-        state["experience_range"] = parsed.get("experience_range", "")
-        state["tools"] = parsed.get("tools", [])
-        state["competencies"] = parsed.get("competencies", [])
-    except (json.JSONDecodeError, AttributeError):
+        response: CompetencyMappingOutput = await chain.ainvoke({"jd_text": state["raw_text"]})
+        state["experience_range"] = response.experience_range
+        state["tools"] = response.tools
+        state["competencies"] = response.competencies
+    except Exception as e:
+        logger.error(f"Competency mapping failed: {e}")
         state["experience_range"] = ""
         state["tools"] = []
         state["competencies"] = []
+        
     logger.info(f"Competencies mapped: tools={len(state['tools'])}, competencies={len(state['competencies'])}")
     return state
 

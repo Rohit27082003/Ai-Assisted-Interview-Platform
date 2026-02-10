@@ -34,16 +34,7 @@ Create a reference answer that:
 Also identify:
 - Key points that MUST be covered
 - Advanced points that show expertise
-- Common mistakes to watch for
-
-OUTPUT FORMAT (JSON only, no markdown):
-{{
-    "reference_answer": "The complete reference answer a strong candidate would give...",
-    "key_points": ["Essential point 1", "Essential point 2", "Essential point 3"],
-    "advanced_points": ["Advanced point showing expertise"],
-    "common_mistakes": ["Common mistake 1", "Misconception to watch for"],
-    "difficulty_assessment": "basic|intermediate|advanced|expert"
-}}"""
+- Common mistakes to watch for"""
 )
 
 
@@ -74,6 +65,13 @@ COMMON MISTAKES (deduct if present):
 
 SCORING RUBRIC (1-5 scale):
 
+RELEVANCE (does it answer the specific question?):
+5 = Directly addresses the core question and all constraints
+4 = Addresses the question well but minor drift
+3 = Addresses the general topic but misses the specific angle
+2 = Tangential or barely related
+1 = Completely irrelevant
+
 CORRECTNESS (accuracy vs reference):
 5 = Completely accurate, no errors
 4 = Mostly accurate, minor issues
@@ -102,35 +100,16 @@ CLARITY (communication quality):
 2 = Confusing in places
 1 = Unclear or poorly structured
 
-OUTPUT FORMAT (JSON only, no markdown):
-{{
-    "correctness": {{
-        "dimension": "correctness",
-        "score": 1-5,
-        "justification": "Brief justification"
-    }},
-    "depth": {{
-        "dimension": "depth",
-        "score": 1-5,
-        "justification": "Brief justification"
-    }},
-    "reasoning": {{
-        "dimension": "reasoning",
-        "score": 1-5,
-        "justification": "Brief justification"
-    }},
-    "clarity": {{
-        "dimension": "clarity",
-        "score": 1-5,
-        "justification": "Brief justification"
-    }},
-    "overall_score": 1.0-5.0,
-    "normalized_score": 0.0-100.0,
-    "strength_areas": ["area1", "area2"],
-    "improvement_areas": ["area1", "area2"],
-    "coverage_percentage": 0.0-100.0,
-    "advanced_points_hit": 0
-}}"""
+PRACTICAL APPLICATION (evidence of real-world experience):
+5 = Cites specific real-world examples, trade-offs, and war stories
+4 = Shows good practical understanding, mentions standard patterns
+3 = Theoretical but correct, lacks practical nuance
+2 = Purely textbook definition, no application context
+1 = No evidence of practical experience
+
+COMPARISON & SIMILARITY:
+- innovative: Provide a detailed "Expected vs Actual" text comparison.
+- similarity_score: Estimate semantic similarity (0.0 to 1.0) based on key concepts covered."""
 )
 
 

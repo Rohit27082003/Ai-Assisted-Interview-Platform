@@ -352,19 +352,23 @@ async def rerun_shortlist(
     if jd.recruiter_id != user.recruiter_id:
         raise HTTPException(status_code=404, detail="Job description not found")
 
-    # Reset shortlisted/rejected candidates to PARSED (but don't touch candidates in interview)
+    # Get candidates with PARSED, SHORTLISTED, or REJECTED status
     result = await db.execute(
         select(Candidate).where(
             Candidate.jd_id == jd_id,
-            Candidate.status.in_([CandidateStatus.SHORTLISTED, CandidateStatus.REJECTED]),
+            Candidate.status.in_([
+                CandidateStatus.PARSED,
+                CandidateStatus.SHORTLISTED,
+                CandidateStatus.REJECTED
+            ]),
         )
     )
     candidates = result.scalars().all()
 
     if not candidates:
         raise HTTPException(
-            status_code=404, 
-            detail="No shortlisted or rejected candidates found to re-evaluate"
+            status_code=404,
+            detail="No candidates with PARSED, SHORTLISTED, or REJECTED status found for re-evaluation"
         )
 
     shortlisted = []
@@ -605,3 +609,69 @@ async def delete_candidate(
     
     await db.delete(candidate)
     await db.commit()
+
+
+@router.post("/{candidate_id}/session", response_model=CandidateSessionInfo)
+async def create_candidate_session(
+    candidate_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
+    """
+    Generate a session for a single candidate and send an email invitation.
+    """
+    from app.services.email_service import get_email_service
+    
+    # Verify candidate exists and belongs to recruiter
+    query = (
+        select(Candidate)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Candidate.candidate_id == candidate_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    candidate = result.scalar_one_or_none()
+    
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+        
+    # Generate session ID
+    session_expiry = datetime.now(timezone.utc) + timedelta(hours=settings.SESSION_EXPIRY_HOURS)
+    candidate.session_id = generate_session_id(settings.SESSION_ID_LENGTH)
+    candidate.session_expires_at = session_expiry
+    candidate.session_created_at = datetime.now(timezone.utc)
+    
+    # Send Email
+    email_service = get_email_service()
+    login_link = f"http://localhost:5173/candidate/login?session={candidate.session_id}&email={candidate.email}"
+    
+    subject = f"Interview Invitation for {candidate.name}"
+    body = f"""
+    <html>
+        <body>
+            <h2>Hello {candidate.name},</h2>
+            <p>You have been invited to an AI-assisted interview.</p>
+            <p>Please click the link below to start:</p>
+            <p><a href="{login_link}">{login_link}</a></p>
+            <p><strong>Session ID:</strong> {candidate.session_id}</p>
+            <p>This link is valid for {settings.SESSION_EXPIRY_HOURS} hours.</p>
+            <br>
+            <p>Best regards,<br>Recruiting Team</p>
+        </body>
+    </html>
+    """
+    
+    await email_service.send_email(candidate.email, subject, body)
+    
+    await db.commit()
+    logger.info(f"Session generated and email sent for candidate {candidate_id}")
+    
+    return CandidateSessionInfo(
+        candidate_id=candidate.candidate_id,
+        name=candidate.name,
+        email=candidate.email,
+        session_id=candidate.session_id,
+        session_expires_at=candidate.session_expires_at,
+    )

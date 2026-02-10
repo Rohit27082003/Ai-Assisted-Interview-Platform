@@ -38,37 +38,7 @@ STRENGTH/WEAKNESS CRITERIA:
 - Must be specific (not "good at coding")
 - Must have evidence from interview
 - Must be relevant to the job role
-- Rate impact: high/medium/low
-
-OUTPUT FORMAT (JSON only, no markdown):
-{{
-    "strengths": [
-        {{
-            "area": "Specific skill/competency",
-            "observation": "What was demonstrated",
-            "evidence": ["Q3: specific quote/behavior", "Q7: another example"],
-            "impact": "high|medium|low"
-        }}
-    ],
-    "weaknesses": [
-        {{
-            "area": "Specific skill/competency",
-            "observation": "What was lacking",
-            "evidence": ["Q5: struggled with...", "Q9: couldn't explain..."],
-            "impact": "high|medium|low"
-        }}
-    ],
-    "performance_summary": "2-3 sentence overall summary",
-    "skill_profile": {{
-        "skill_name": 0.0-100.0
-    }},
-    "standout_answers": ["Q3: Why it was notable"],
-    "concerning_answers": ["Q8: Why it was concerning"],
-    "communication_quality": "excellent|good|adequate|needs_improvement",
-    "problem_solving_approach": "systematic|intuitive|scattered|methodical",
-    "integrity_concerns": true|false,
-    "integrity_notes": "Explanation if concerns exist, else null"
-}}"""
+- Rate impact: high/medium/low"""
 )
 
 
@@ -120,20 +90,7 @@ NO_HIRE (40-54):
 STRONG_NO_HIRE (<40 or integrity issues):
 - Does not meet requirements
 - Serious concerns
-- Integrity violations
-
-OUTPUT FORMAT (JSON only, no markdown):
-{{
-    "recommendation": "strong_hire|hire|borderline|no_hire|strong_no_hire",
-    "confidence": 0.0-1.0,
-    "primary_reasons": ["Reason 1", "Reason 2", "Reason 3"],
-    "concerns": ["Concern even if recommending hire"],
-    "role_fit_score": 0.0-100.0,
-    "role_fit_rationale": "Explanation of role fit",
-    "growth_potential": "high|moderate|limited",
-    "suggested_level": "junior|mid|senior|staff|null",
-    "conditional_factors": ["Factor that might change recommendation"]
-}}"""
+- Integrity violations"""
 )
 
 

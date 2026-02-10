@@ -31,9 +31,24 @@ services:
       - IS_PERSISTENT=TRUE
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 10s
       timeout: 10s
       retries: 5
+
+  # SMTP Relay (Real Email Sending)
+  smtp-relay:
+    image: juanluisbaptiste/postfix
+    container_name: interview-smtp-relay
+    ports:
+      - "25:25"
+    environment:
+      - SMTP_SERVER=${RELAY_HOST}
+      - SMTP_PORT=${RELAY_PORT}
+      - SMTP_USERNAME=${RELAY_USERNAME}
+      - SMTP_PASSWORD=${RELAY_PASSWORD}
+      - SERVER_HOSTNAME=interview-platform.com
+      # Trust all internal networks (for relaying from backend)
+      - SMTP_NETWORKS=0.0.0.0/0
+
 
 volumes:
   postgres_data:

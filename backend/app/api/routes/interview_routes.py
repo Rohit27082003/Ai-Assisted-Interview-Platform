@@ -77,15 +77,25 @@ from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedU
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
+# Shared Services imports
+from app.services.realtime.session_manager import active_sessions, pending_cleanups
+from app.services.graphs.lifecycle import (
+    ensure_active_session,
+    run_post_interview_analysis,
+    handle_disconnect_cleanup,
+    delayed_disconnect_cleanup,
+)
+from app.services.graphs.execution import (
+    run_graph_cycle,
+    handle_answer_started,
+    handle_answer_complete,
+    handle_violation,
+    handle_request_finish,
+)
+
 logger = get_logger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/api/interviews", tags=["Interviews"])
-
-# Active interview sessions (WebSocket connections)
-active_sessions: Dict[str, Dict[str, Any]] = {}
-
-# Pending cleanup tasks for disconnected sessions to allow grace period for refresh
-pending_cleanups: Dict[str, asyncio.Task] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -430,7 +440,13 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
         pending_cleanups.pop(interview_id, None)
 
     # Register active session
-    active_sessions[interview_id] = {"websocket": websocket, "connected_at": datetime.now(timezone.utc)}
+    active_sessions[interview_id] = {
+        "websocket": websocket,
+        "connected_at": datetime.now(timezone.utc),
+        "stream_id": f"stream-{interview_id}",
+        "answer_buffer": "",
+        "terminated": False
+    }
 
     transcribe_service = get_transcribe_service()
     broadcaster = get_broadcaster()
@@ -451,17 +467,41 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
         candidate = await db.get(Candidate, interview.candidate_id)
         jd = await db.get(JobDescription, candidate.jd_id) if candidate else None
 
-        # Check if graph has state, if not seed from DB
+        # CRITICAL: Always sync graph state from DB on reconnect to prevent question repetition
+        # The graph checkpointer and DB can get out of sync, especially after refresh
         current_state_snap = await graph.aget_state(config)
-        if not current_state_snap or not current_state_snap.values:
-            if interview.state_json:
-                await graph.aupdate_state(config, interview.state_json)
-                logger.info(f"Seeded graph state from DB for {interview_id}")
+
+        if interview.state_json:
+            # Compare checkpoint state with DB state
+            db_state = interview.state_json
+            checkpoint_state = current_state_snap.values if current_state_snap else None
+
+            # If no checkpoint state OR if DB has more recent questions, resync
+            should_resync = False
+            if not checkpoint_state:
+                should_resync = True
+                logger.info(f"No checkpoint state found for {interview_id}, seeding from DB")
+            else:
+                db_question_count = len(db_state.get("question_records", []))
+                checkpoint_question_count = len(checkpoint_state.get("question_records", []))
+                if db_question_count > checkpoint_question_count:
+                    should_resync = True
+                    logger.warning(
+                        f"DB has more questions ({db_question_count}) than checkpoint ({checkpoint_question_count}). "
+                        f"Resyncing to prevent repetition."
+                    )
+
+            if should_resync:
+                await graph.aupdate_state(config, db_state)
+                logger.info(f"Synced graph state from DB for {interview_id}")
+                # Refresh state snapshot after update
+                current_state_snap = await graph.aget_state(config)
 
         # Update interview status
-        interview.status = InterviewStatus.IN_PROGRESS
-        interview.started_at = interview.started_at or datetime.now(timezone.utc)
-        await db.commit()
+        if interview.status == InterviewStatus.PENDING:
+            interview.status = InterviewStatus.IN_PROGRESS
+            interview.started_at = interview.started_at or datetime.now(timezone.utc)
+            await db.commit()
 
         # Restore state to client
         if current_state_snap and current_state_snap.values:
@@ -521,12 +561,13 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
                 "data": restore_data
             })
 
-    # Register active session
+    # Register active session again (ensure fields)
     active_sessions[interview_id] = {
         "websocket": websocket,
         "terminated": False,
         "stream_id": f"stream-{interview_id}",
         "answer_buffer": "",
+        "connected_at": datetime.now(timezone.utc)
     }
 
     # Broadcast interview started
@@ -556,10 +597,12 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
             raw_msg = await websocket.receive_text()
             msg = json.loads(raw_msg)
             msg_type = msg.get("type", "")
+            
+            logger.info(f"WS MESSAGE [{interview_id}]: type={msg_type}")
 
             if msg_type == "start":
                 # Start or resume the interview graph
-                await _run_graph_cycle(
+                await run_graph_cycle(
                     graph, config, websocket, interview_id, broadcaster
                 )
 
@@ -591,45 +634,28 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
 
             elif msg_type == "answer_started":
                 # Candidate started answering (after reading period)
-                await _handle_answer_started(graph, config, interview_id)
+                await handle_answer_started(graph, config, interview_id)
 
             elif msg_type == "answer_complete":
                 # Process completed answer
-                await _handle_answer_complete(
+                logger.info(f"Processing answer_complete for {interview_id}")
+                await handle_answer_complete(
                     graph, config, websocket, interview_id,
                     msg.get("data", {}), transcribe_service, broadcaster
                 )
 
             elif msg_type == "violation":
                 # Handle cheating/violation report
-                await _handle_violation(
+                await handle_violation(
                     graph, config, interview_id,
                     msg.get("data", {}), broadcaster
                 )
 
             elif msg_type == "request_finish":
                 # Candidate requested to finish interview early
-                logger.info(f"Candidate requested finish for {interview_id}")
-                
-                # Update DB status
-                async with async_session_factory() as db:
-                    interview = await db.get(Interview, UUID(interview_id))
-                    if interview:
-                        interview.status = InterviewStatus.COMPLETED
-                        interview.ended_at = datetime.now(timezone.utc)
-                        await db.commit()
-
-                # Trigger post-interview analysis
-                asyncio.create_task(_run_post_interview_analysis(interview_id))
-                
-                # Send completion message
-                await websocket.send_json({
-                    "type": "complete",
-                    "data": {
-                        "message": "Interview completed by user request",
-                        "reason": "user_completed",
-                    }
-                })
+                await handle_request_finish(
+                    websocket, interview_id, broadcaster
+                )
                 break
 
     except WebSocketDisconnect:
@@ -648,511 +674,7 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
         logger.info(f"WebSocket disconnected for {interview_id}, cleanup scheduled")
 
 
-async def _run_graph_cycle(
-    graph,
-    config: Dict[str, Any],
-    websocket: WebSocket,
-    interview_id: str,
-    broadcaster,
-):
-    """Run a graph execution cycle and handle events."""
-    try:
-        async for event in graph.astream(None, config, stream_mode="updates"):
-            await _handle_graph_event(
-                event, websocket, interview_id, broadcaster
-            )
 
-            # Check if we hit an interrupt point
-            state_snap = await graph.aget_state(config)
-            if state_snap and state_snap.next:
-                # Graph is waiting for input (audio_pipeline interrupt)
-                break
-
-    except Exception as e:
-        logger.error(f"Graph cycle error: {e}", exc_info=True)
-        await websocket.send_json({
-            "type": "error",
-            "data": {"message": f"Graph error: {str(e)}"}
-        })
-
-
-async def _handle_graph_event(
-    event: Dict[str, Any],
-    websocket: WebSocket,
-    interview_id: str,
-    broadcaster,
-):
-    for node_name, state_update in event.items():
-        # logger.info(f"Handling graph event from node: {node_name}. Keys: {list(state_update.keys())}")
-        if node_name == "question_engine":
-            # New question generated
-            question = state_update.get("current_question")
-            if question:
-                # Get pillar info
-                focus_areas = state_update.get("focus_areas", [])
-                current_idx = state_update.get("current_pillar_index", 0)
-                pillar_name = "Unknown"
-                if focus_areas and 0 <= current_idx < len(focus_areas):
-                    pillar_name = focus_areas[current_idx].get("skill", "Unknown")
-
-                await websocket.send_json({
-                    "type": "question",
-                    "data": {
-                        "question_text": question,
-                        "pillar": pillar_name,
-                        "question_number": state_update.get("total_questions_asked", 1),
-                        "depth_level": state_update.get("current_question_depth", 1),
-                        "is_follow_up": state_update.get("follow_ups_in_current_pillar", 0) > 0,
-                        "reading_time_seconds": settings.READING_TIME_SECONDS,
-                        "answer_time_seconds": settings.ANSWER_TIME_SECONDS,
-                    }
-                })
-
-                # Broadcast to recruiters
-                await broadcaster.broadcast(
-                    interview_id,
-                    InterviewEventType.QUESTION_ASKED,
-                    create_question_asked_event(
-                        question_number=state_update.get("total_questions_asked", 1),
-                        pillar_name=pillar_name,
-                        pillar_index=current_idx,
-                        question_preview=question[:100],
-                        depth_level=state_update.get("current_question_depth", 1),
-                        is_follow_up=state_update.get("follow_ups_in_current_pillar", 0) > 0,
-                    ),
-                )
-
-        elif node_name == "pillar_manager":
-            # Pillar transition
-            phase = state_update.get("phase")
-            if phase == InterviewPhase.TRANSITIONING.value:
-                focus_areas = state_update.get("focus_areas", [])
-                current_idx = state_update.get("current_pillar_index", 0)
-
-                if current_idx > 0 and current_idx <= len(focus_areas):
-                    prev_pillar = focus_areas[current_idx - 1]
-                    next_pillar = focus_areas[current_idx] if current_idx < len(focus_areas) else None
-
-                    await websocket.send_json({
-                        "type": "pillar_transition",
-                        "data": {
-                            "completed_pillar": prev_pillar.get("skill"),
-                            "next_pillar": next_pillar.get("skill") if next_pillar else None,
-                        }
-                    })
-
-                    await broadcaster.broadcast(
-                        interview_id,
-                        InterviewEventType.PILLAR_COMPLETED,
-                        create_pillar_completed_event(
-                            pillar_name=prev_pillar.get("skill", "Unknown"),
-                            pillar_index=current_idx - 1,
-                            pillar_score=prev_pillar.get("pillar_score", 0),
-                            questions_asked=prev_pillar.get("questions_asked", 0),
-                            next_pillar=next_pillar.get("skill") if next_pillar else None,
-                        ),
-                    )
-
-        elif node_name == "answer_analyzer":
-            # Answer analyzed
-            signals = state_update.get("last_analysis_signals", {})
-            if signals:
-                await broadcaster.broadcast(
-                    interview_id,
-                    InterviewEventType.ANSWER_ANALYZED,
-                    create_answer_analyzed_event(
-                        question_number=state_update.get("total_questions_asked", 0),
-                        pillar_name=state_update.get("current_pillar", "Unknown"),
-                        score=signals.get("overall_signal_score", 0),
-                        summary=signals.get("analysis_summary", ""),
-                        has_concerns=signals.get("has_probeable_gaps", False),
-                    ),
-                )
-
-            # Check for cheating flags
-            cheating_level = state_update.get("cheating_level")
-            if cheating_level and cheating_level != "none":
-                await broadcaster.broadcast(
-                    interview_id,
-                    InterviewEventType.CHEATING_FLAG,
-                    create_cheating_flag_event(
-                        question_number=state_update.get("total_questions_asked", 0),
-                        severity=cheating_level,
-                        reason=state_update.get("cheating_flags", [{}])[-1].get("reason", ""),
-                        cumulative_score=state_update.get("cheating_score", 0),
-                    ),
-                )
-
-        elif node_name == "decision_router":
-            # Routing decision
-            decision = state_update.get("router_decision")
-            phase = state_update.get("phase")
-
-            if decision in [
-                RouterDecision.END_COMPLETE.value,
-                RouterDecision.END_VIOLATION.value,
-                RouterDecision.END_TIMEOUT.value,
-                RouterDecision.END_RECRUITER.value,
-            ]:
-                await websocket.send_json({
-                    "type": "complete",
-                    "data": {
-                        "message": "Interview completed",
-                        "reason": decision,
-                    }
-                })
-
-                # Update DB
-                async with async_session_factory() as db:
-                    interview = await db.get(Interview, UUID(interview_id))
-                    if interview:
-                        interview.status = (
-                            InterviewStatus.COMPLETED
-                            if decision == RouterDecision.END_COMPLETE.value
-                            else InterviewStatus.TERMINATED
-                        )
-                        interview.ended_at = datetime.now(timezone.utc)
-                        interview.state_json = serialize_state(state_update)
-                        await db.commit()
-
-                # Broadcast completion
-                timing = state_update.get("timing", {})
-                started_at = timing.get("interview_started_at")
-                duration = 0
-                if started_at:
-                    start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                    duration = (datetime.now(timezone.utc) - start).total_seconds() / 60
-
-                await broadcaster.broadcast(
-                    interview_id,
-                    InterviewEventType.INTERVIEW_COMPLETED,
-                    create_interview_completed_event(
-                        completion_status=decision,
-                        total_questions=state_update.get("total_questions_asked", 0),
-                        total_pillars=state_update.get("total_pillars", 0),
-                        duration_minutes=duration,
-                        final_score=None,  # Calculated later in evaluation
-                    ),
-                )
-
-                # Trigger post-interview analysis
-                asyncio.create_task(_run_post_interview_analysis(interview_id))
-
-
-async def _handle_answer_started(graph, config: Dict[str, Any], interview_id: str):
-    """Handle when candidate starts answering."""
-    # Update timing state
-    now = datetime.now(timezone.utc)
-
-    state_snap = await graph.aget_state(config)
-    if state_snap and state_snap.values:
-        timing = state_snap.values.get("timing", {})
-        timing["answer_started_at"] = now.isoformat()
-        await graph.aupdate_state(config, {"timing": timing})
-
-
-async def _handle_answer_complete(
-    graph,
-    config: Dict[str, Any],
-    websocket: WebSocket,
-    interview_id: str,
-    data: Dict[str, Any],
-    transcribe_service,
-    broadcaster,
-):
-    """Handle completed answer submission."""
-    session = active_sessions.get(interview_id, {})
-    stream_id = session.get("stream_id", f"stream-{interview_id}")
-
-    # Get final transcription
-    final_text = await transcribe_service.stop_stream(stream_id)
-    user_text = data.get("text", "")
-    final_answer = user_text or final_text or "(No answer provided)"
-
-    # Get audio URL if we stored it
-    audio_url = data.get("audio_url")
-
-    # Update state with answer
-    await graph.aupdate_state(config, {
-        "_injected_answer_text": final_answer,
-        "_injected_audio_url": audio_url,
-    })
-
-    # Resume graph (audio_pipeline → answer_analyzer → decision_router)
-    await _run_graph_cycle(graph, config, websocket, interview_id, broadcaster)
-
-    # Sync state to DB
-    state_snap = await graph.aget_state(config)
-    if state_snap and state_snap.values:
-        async with async_session_factory() as db:
-            interview = await db.get(Interview, UUID(interview_id))
-            if interview:
-                interview.state_json = serialize_state(dict(state_snap.values))
-                
-                # Persist Transcript for Analytics/Reporting
-                # We do this here to ensure it's saved even if graph crashes later
-                question_records = state_snap.values.get("question_records", [])
-                if question_records:
-                    last = question_records[-1]
-                    # Only save if we have an answer and it hasn't been saved yet (check question_id?)
-                    # Ideally we should check if transcript exists, but for now we assume 1-to-1 if linear
-                    # We can use update_or_create logic or just append. 
-                    # Let's check if it exists first to avoid duplicates on retries.
-                    
-                    # Check if transcript already exists for this question
-                    existing_transcript = await db.execute(
-                        select(Transcript).where(
-                            Transcript.interview_id == interview.interview_id,
-                            Transcript.question == last.get("question_text") # Using text as proxy if ID mismatch?
-                            # Better to use question_id if available, but question_records might generate new IDs on retry?
-                            # Actually question_records come from state.
-                        )
-                    )
-                    if not existing_transcript.scalars().first():
-                         # Clean up audio url
-                         audio = last.get("answer_audio_url")
-                         if audio and audio.startswith("http"):
-                             pass # usage?
-                         
-                         transcript_entry = Transcript(
-                            interview_id=interview.interview_id,
-                            pillar=last.get("pillar_name", "General"),
-                            question_number=state_snap.values.get("total_questions_asked", 0),
-                            question=last.get("question_text", ""),
-                            answer=last.get("answer_text", "(No answer)"),
-                            audio_url=last.get("answer_audio_url"),
-                            is_follow_up=last.get("is_follow_up", False),
-                            created_at=datetime.now(timezone.utc)
-                         )
-                         db.add(transcript_entry)
-                
-                await db.commit()
-
-
-async def _handle_violation(
-    graph,
-    config: Dict[str, Any],
-    interview_id: str,
-    data: Dict[str, Any],
-    broadcaster,
-):
-    """Handle cheating/violation report."""
-    violation_type = data.get("type", "unknown")
-    details = data.get("details", "")
-
-    # Update cheating flags in state
-    state_snap = await graph.aget_state(config)
-    if state_snap and state_snap.values:
-        state = state_snap.values
-        cheating_flags = state.get("cheating_flags", [])
-        cheating_flags.append({
-            "question_id": state.get("current_question_id"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "reason": f"{violation_type}: {details}",
-            "severity": 7.0,  # High severity for manual reports
-        })
-
-        cheating_score = state.get("cheating_score", 0) + 3.0
-        cheating_level = state.get("cheating_level", "none")
-
-        if cheating_score >= 8.0:
-            cheating_level = "penalty"
-        elif cheating_score >= 6.0:
-            cheating_level = "warning_2"
-        elif cheating_score >= 4.0:
-            cheating_level = "warning_1"
-
-        await graph.aupdate_state(config, {
-            "cheating_flags": cheating_flags,
-            "cheating_score": cheating_score,
-            "cheating_level": cheating_level,
-        })
-
-        # Broadcast
-        await broadcaster.broadcast(
-            interview_id,
-            InterviewEventType.CHEATING_WARNING,
-            {
-                "type": violation_type,
-                "details": details,
-                "level": cheating_level,
-                "cumulative_score": cheating_score,
-            },
-        )
-
-
-async def _handle_disconnect_cleanup(interview_id: str, broadcaster):
-    """Handle cleanup when WebSocket disconnects."""
-    try:
-        async with async_session_factory() as db:
-            interview = await db.get(Interview, UUID(interview_id))
-            if interview and interview.status in (
-                InterviewStatus.PENDING,
-                InterviewStatus.IN_PROGRESS,
-            ):
-                logger.info(f"Auto-completing disconnected interview: {interview_id}")
-                interview.status = InterviewStatus.COMPLETED
-                interview.ended_at = datetime.now(timezone.utc)
-                await db.commit()
-
-                # Trigger post-interview analysis
-                asyncio.create_task(_run_post_interview_analysis(interview_id))
-
-                # Broadcast
-                await broadcaster.broadcast(
-                    interview_id,
-                    InterviewEventType.INTERVIEW_COMPLETED,
-                    {
-                        "completion_status": "disconnected",
-                        "message": "Interview completed due to disconnection",
-                    },
-                )
-
-    except Exception as e:
-        logger.error(f"Disconnect cleanup failed for {interview_id}: {e}")
-
-
-async def delayed_disconnect_cleanup(interview_id: str, broadcaster, delay: int = 15):
-    """
-    Wait for a grace period before cleaning up a disconnected session.
-    If the user reconnects within the delay, this task should be cancelled.
-    """
-    try:
-        await asyncio.sleep(delay)
-        # Check if user reconnected (is in active_sessions)
-        if interview_id not in active_sessions:
-            logger.info(f"Grace period expired for {interview_id}, performing cleanup")
-            await _handle_disconnect_cleanup(interview_id, broadcaster)
-        else:
-            logger.info(f"User reconnected for {interview_id}, skipping cleanup")
-    except asyncio.CancelledError:
-        logger.info(f"Cleanup cancelled for interview {interview_id} - user reconnected")
-    finally:
-        pending_cleanups.pop(interview_id, None)
-
-
-async def _run_post_interview_analysis(interview_id: str):
-    """Run evaluation and reporting graphs after interview completion."""
-    logger.info(f"Starting post-interview analysis for {interview_id}")
-
-    try:
-        async with async_session_factory() as db:
-            interview = await db.get(Interview, UUID(interview_id))
-            if not interview:
-                return
-
-            candidate = await db.get(Candidate, interview.candidate_id)
-            jd = await db.get(JobDescription, candidate.jd_id) if candidate else None
-
-            if not candidate or not jd:
-                logger.error(f"Missing candidate/JD for interview {interview_id}")
-                return
-
-            # Get transcript history from state
-            state = interview.state_json or {}
-            question_records = state.get("question_records", [])
-
-            # Convert to transcript format for evaluation
-            transcript_history = [
-                {
-                    "pillar": r.get("pillar_name"),
-                    "question": r.get("question_text"),
-                    "answer": r.get("answer_text"),
-                    "is_follow_up": r.get("is_follow_up", False),
-                }
-                for r in question_records
-                if r.get("answer_text")
-            ]
-
-            # Clear previous evaluations/reports
-            await db.execute(
-                delete(Evaluation).where(Evaluation.interview_id == interview.interview_id)
-            )
-            await db.execute(
-                delete(Report).where(Report.interview_id == interview.interview_id)
-            )
-            await db.commit()
-
-            # Run evaluation graph
-            from app.services.graphs.evaluation import build_evaluation_graph
-            eval_graph = build_evaluation_graph()
-
-            eval_state = await eval_graph.ainvoke({
-                "interview_id": str(interview_id),
-                "candidate_id": str(candidate.candidate_id),
-                "jd_object": jd.parsed_data or {},
-                "transcript_history": transcript_history,
-                "evaluations": [],
-                "average_score": 0.0,
-                "pillar_scores": {},
-            })
-
-            # Persist evaluations
-            for ev in eval_state.get("evaluations", []):
-                db_eval = Evaluation(
-                    interview_id=interview.interview_id,
-                    pillar=ev.get("pillar"),
-                    question=ev.get("question"),
-                    answer=ev.get("answer"),
-                    reference_answer=ev.get("reference_answer"),
-                    correctness=ev.get("correctness"),
-                    depth=ev.get("depth"),
-                    reasoning=ev.get("reasoning"),
-                    clarity=ev.get("clarity"),
-                    overall_score=ev.get("overall_score"),
-                    justification=ev.get("justification"),
-                )
-                db.add(db_eval)
-
-            candidate.status = CandidateStatus.EVALUATED
-            await db.commit()
-
-            # Run reporting graph
-            from app.services.graphs.reporting import build_reporting_graph
-            report_graph = build_reporting_graph()
-
-            report_state = await report_graph.ainvoke({
-                "interview_id": str(interview_id),
-                "candidate_id": str(candidate.candidate_id),
-                "candidate_name": candidate.name,
-                "jd_title": jd.title,
-                "jd_object": jd.parsed_data or {},
-                "evaluations": eval_state.get("evaluations", []),
-                "pillar_scores": eval_state.get("pillar_scores", {}),
-                "average_score": eval_state.get("average_score", 0),
-                "cheating_flags": state.get("cheating_flags", []),
-            })
-
-            # Parse recommendation
-            rec_str = str(report_state.get("recommendation", "borderline")).lower()
-            try:
-                rec_enum = Recommendation(rec_str)
-            except ValueError:
-                rec_enum = Recommendation.BORDERLINE
-
-            # Persist report
-            db_report = Report(
-                interview_id=interview.interview_id,
-                candidate_name=candidate.name,
-                jd_title=jd.title,
-                strengths=report_state.get("strengths"),
-                weaknesses=report_state.get("weaknesses"),
-                cheating_flags=state.get("cheating_flags", []),
-                topic_scores=report_state.get("pillar_scores"),
-                final_score=report_state.get("final_score"),
-                confidence_score=report_state.get("confidence_score"),
-                recommendation=rec_enum,
-                summary=report_state.get("summary"),
-                detailed_feedback=report_state.get("detailed_feedback"),
-            )
-            db.add(db_report)
-            candidate.status = CandidateStatus.REPORTED
-            await db.commit()
-
-            logger.info(f"Post-interview analysis complete for {interview_id}")
-
-    except Exception as e:
-        logger.error(f"Post-interview analysis failed for {interview_id}: {e}", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

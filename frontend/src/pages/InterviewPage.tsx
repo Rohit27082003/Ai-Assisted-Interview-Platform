@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Mic, MicOff, Clock, AlertTriangle, CheckCircle, AlertCircle
+  MicOff, Clock, AlertTriangle, CheckCircle, AlertCircle,
+  XCircle, Radio, Play
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { InterviewQuestion, WSMessage } from '../types';
+import { getCandidateSession } from './candidate/CandidateLoginPage';
+import { Badge, Button, Card, Loader } from '../components/ui';
 
 type Phase = 'idle' | 'reading' | 'answering' | 'processing' | 'complete' | 'terminated';
 
@@ -16,7 +19,6 @@ export default function InterviewPage() {
   const audioChunksRef = useRef<Blob[]>([]);
   const sequenceRef = useRef(0);
 
-  // State
   const [connected, setConnected] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const [currentQuestion, setCurrentQuestion] = useState<InterviewQuestion | null>(null);
@@ -29,7 +31,6 @@ export default function InterviewPage() {
   const [permissionStatus, setPermissionStatus] = useState<'checking' | 'granted' | 'denied'>('checking');
   const [showFinishModal, setShowFinishModal] = useState(false);
 
-  // Refs for callbacks to avoid closure staleness
   const phaseRef = useRef(phase);
   const currentQuestionRef = useRef(currentQuestion);
   const answerTextRef = useRef(answerText);
@@ -38,7 +39,6 @@ export default function InterviewPage() {
   useEffect(() => { currentQuestionRef.current = currentQuestion; }, [currentQuestion]);
   useEffect(() => { answerTextRef.current = answerText; }, [answerText]);
 
-  // Permission check
   useEffect(() => {
     checkMicrophonePermission();
   }, []);
@@ -54,7 +54,6 @@ export default function InterviewPage() {
     }
   };
 
-  // Helper Functions
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === 'recording') {
       mediaRecorderRef.current.stop();
@@ -79,15 +78,35 @@ export default function InterviewPage() {
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 48000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+
+      const mimeType = 'audio/ogg; codecs=opus';
+
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        toast.error('Browser does not support required audio format (ogg-opus). Please use Chrome, Firefox, or Edge.');
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: 48000,
+      });
+
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
-          // Send chunk to server
           const reader = new FileReader();
           reader.onloadend = () => {
             const base64 = (reader.result as string).split(',')[1];
@@ -103,18 +122,16 @@ export default function InterviewPage() {
       };
 
       mediaRecorder.onstop = () => {
-        // When recording stops, ensure last chunk is processed, then submit
         setTimeout(() => {
-          // Only finalize if we are still in an active answering phase (or user initiated finish)
-          // We rely on the caller to change phase if needed, mostly this is for auto-submit
           finalizeSubmission();
         }, 500);
       };
 
-      mediaRecorder.start(1000); // 1 second chunks
+      mediaRecorder.start(250);
       setRecording(true);
-    } catch {
+    } catch (err) {
       toast.error('Microphone access denied');
+      console.error('Recording error:', err);
     }
   }, [finalizeSubmission]);
 
@@ -126,17 +143,21 @@ export default function InterviewPage() {
     }
   }, [stopRecording, finalizeSubmission]);
 
+  const handleFinishInterview = () => {
+    setShowFinishModal(true);
+  };
+
   const handleFinishConfirm = () => {
     setShowFinishModal(false);
     stopRecording();
-    // Send current partial answer if any (only if answering)
+
     if (phase === 'answering') {
       wsRef.current?.send(JSON.stringify({
         type: 'answer_complete',
         data: { text: answerText },
       }));
     }
-    // Send finish signal
+
     setTimeout(() => {
       wsRef.current?.send(JSON.stringify({
         type: 'request_finish',
@@ -175,6 +196,10 @@ export default function InterviewPage() {
         }
         break;
 
+      case 'warning':
+        toast.error(msg.data.message, { duration: 4000 });
+        break;
+
       case 'cheating_warning':
         setCheatingWarnings((prev) => [...prev, msg.data.message]);
         toast.error(`Warning: ${msg.data.message}`, { duration: 5000 });
@@ -194,7 +219,7 @@ export default function InterviewPage() {
         toast.error(msg.data.message, { duration: 6000 });
         break;
 
-      case 'restore_state':
+      case 'restore_state': {
         const state = msg.data;
         if (state.question) {
           setCurrentQuestion(state.question);
@@ -217,6 +242,7 @@ export default function InterviewPage() {
         }
         toast.success('Session restored');
         break;
+      }
 
       case 'transcript_partial':
         setAnswerText(msg.data.text);
@@ -224,12 +250,18 @@ export default function InterviewPage() {
     }
   }, [startRecording, submitAnswer]);
 
-  // WebSocket Connection
   useEffect(() => {
     if (permissionStatus !== 'granted' || !interviewId) return;
 
-    // Use direct connection to backend
-    const wsUrl = `ws://127.0.0.1:8000/api/interviews/ws/${interviewId}`;
+    const candidateSession = getCandidateSession();
+    let wsUrl = '';
+
+    if (candidateSession) {
+      wsUrl = `ws://127.0.0.1:8000/api/candidate-portal/ws/${interviewId}?session=${candidateSession.sessionToken}`;
+    } else {
+      wsUrl = `ws://127.0.0.1:8000/api/interviews/ws/${interviewId}`;
+    }
+
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -244,25 +276,23 @@ export default function InterviewPage() {
     };
 
     ws.onclose = (event) => {
-      console.warn('WebSocket Closed:', event.code, event.reason);
       setConnected(false);
-      // Only show error if not normal closure or page navigation
-      if (event.code !== 1000 && event.code !== 1001) {
-        // toast.error(`Connection lost (${event.code})`);
+
+      if (event.code === 4003) {
+        toast.error('Session expired or invalid. Please login again.');
+        navigate('/candidate/login');
       }
     };
 
     ws.onerror = (error) => {
       console.error('WebSocket Error:', error);
-      // toast.error('WebSocket connection error');
     };
 
     return () => {
       ws.close();
     };
-  }, [interviewId, permissionStatus, handleWSMessage]);
+  }, [interviewId, permissionStatus, handleWSMessage, navigate]);
 
-  // Tab Visibility Tracking
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.hidden && connected && phase !== 'complete' && phase !== 'idle') {
@@ -270,17 +300,16 @@ export default function InterviewPage() {
           type: 'violation',
           data: { reason: 'tab_switch' }
         }));
-        toast.error("Warning: Tab switching is monitored and counts as a violation.");
+        toast.error('Warning: Tab switching is monitored and counts as a violation.');
       }
     };
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [connected, phase]);
 
-  // Timer Actions (Client-side backup)
   useEffect(() => {
     if (phase === 'idle' || phase === 'complete' || phase === 'processing' || phase === 'terminated') return;
 
@@ -307,7 +336,7 @@ export default function InterviewPage() {
       try {
         await document.documentElement.requestFullscreen();
       } catch (err) {
-        console.error("Full screen denied:", err);
+        console.error('Full screen denied:', err);
       }
       wsRef.current.send(JSON.stringify({ type: 'start', data: {} }));
     } else {
@@ -323,24 +352,26 @@ export default function InterviewPage() {
 
   if (phase === 'complete') {
     return (
-      <div className="max-w-2xl mx-auto text-center py-20">
-        <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-6" />
-        <h1 className="text-3xl font-bold mb-4">Interview Complete</h1>
-        <p className="text-gray-600 mb-2">
-          {questionsAnswered} questions answered across multiple topics
-        </p>
-        {cheatingWarnings.length > 0 && (
-          <p className="text-yellow-600 mb-4">
-            {cheatingWarnings.length} integrity warning(s) recorded
-          </p>
-        )}
-        <p className="text-gray-500 mb-8">
-          The AI evaluation system will now analyze your responses.
-        </p>
-        <div className="flex gap-4 justify-center">
-          <button className="btn-primary" onClick={() => navigate('/candidates')}>
-            Back to Candidates
-          </button>
+      <div className="min-h-screen bg-slate-100 px-4 py-10">
+        <div className="mx-auto max-w-2xl">
+          <Card className="text-center">
+            <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100">
+              <CheckCircle className="h-8 w-8 text-emerald-600" />
+            </div>
+            <h1 className="text-3xl font-semibold text-slate-900">Interview complete</h1>
+            <p className="mt-3 text-slate-600">
+              You answered <span className="font-semibold text-slate-900">{questionsAnswered}</span> questions.
+            </p>
+            {cheatingWarnings.length > 0 ? (
+              <p className="mt-2 text-sm text-amber-700">
+                {cheatingWarnings.length} integrity warning(s) were recorded.
+              </p>
+            ) : null}
+            <p className="mt-2 text-sm text-slate-500">Your responses are now being evaluated.</p>
+            <div className="mt-8">
+              <Button onClick={() => navigate('/candidate/portal')}>Back to portal</Button>
+            </div>
+          </Card>
         </div>
       </div>
     );
@@ -348,19 +379,18 @@ export default function InterviewPage() {
 
   if (phase === 'terminated') {
     return (
-      <div className="max-w-2xl mx-auto text-center py-20">
-        <AlertTriangle className="w-20 h-20 text-red-500 mx-auto mb-6" />
-        <h1 className="text-3xl font-bold mb-4 text-red-600">Interview Terminated</h1>
-        <p className="text-gray-600 mb-2">
-          This session has been terminated due to multiple integrity violations.
-        </p>
-        <p className="text-gray-500 mb-8">
-          A report has been generated and sent to the recruitment team.
-        </p>
-        <div className="flex gap-4 justify-center">
-          <button className="btn-primary bg-gray-600 hover:bg-gray-700" onClick={() => navigate('/candidates')}>
-            Return to Dashboard
-          </button>
+      <div className="min-h-screen bg-slate-100 px-4 py-10">
+        <div className="mx-auto max-w-2xl">
+          <Card className="text-center">
+            <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-rose-100">
+              <XCircle className="h-8 w-8 text-rose-600" />
+            </div>
+            <h1 className="text-3xl font-semibold text-rose-700">Interview terminated</h1>
+            <p className="mt-3 text-slate-600">This session ended due to multiple integrity violations.</p>
+            <div className="mt-8">
+              <Button variant="danger" onClick={() => navigate('/candidate/portal')}>Return to portal</Button>
+            </div>
+          </Card>
         </div>
       </div>
     );
@@ -368,240 +398,191 @@ export default function InterviewPage() {
 
   if (permissionStatus === 'checking') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4" />
-        <p className="text-gray-600">Checking microphone permissions...</p>
+      <div className="flex min-h-screen items-center justify-center bg-slate-100">
+        <Loader label="Checking microphone permissions" />
       </div>
     );
   }
 
   if (permissionStatus === 'denied') {
     return (
-      <div className="max-w-md mx-auto text-center py-20 px-4">
-        <MicOff className="w-16 h-16 text-red-500 mx-auto mb-6" />
-        <h2 className="text-2xl font-bold mb-4">Microphone Access Required</h2>
-        <p className="text-gray-600 mb-8">
-          To proceed with the interview, we need access to your microphone.
-          Please enable microphone permissions in your browser settings and refresh the page.
-        </p>
-        <button
-          onClick={() => window.location.reload()}
-          className="btn-primary"
-        >
-          Try Again
-        </button>
+      <div className="min-h-screen bg-slate-100 px-4 py-10">
+        <div className="mx-auto max-w-md">
+          <Card className="text-center">
+            <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-full bg-rose-100">
+              <MicOff className="h-7 w-7 text-rose-600" />
+            </div>
+            <h2 className="text-xl font-semibold text-slate-900">Microphone access required</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Enable microphone permissions in your browser and try again.
+            </p>
+            <div className="mt-6">
+              <Button className="w-full" onClick={() => window.location.reload()}>Try Again</Button>
+            </div>
+          </Card>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 relative">
-      {/* Finish Confirmation Modal */}
-      {showFinishModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-200">
-            <div className="flex items-center gap-3 text-red-600 mb-4">
-              <div className="p-3 bg-red-100 rounded-full">
-                <AlertCircle className="w-6 h-6" />
+    <div className="min-h-screen bg-slate-100 px-4 py-6 lg:py-8">
+      {showFinishModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <Card className="w-full max-w-md">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-rose-100">
+                <AlertCircle className="h-5 w-5 text-rose-600" />
               </div>
-              <h3 className="text-xl font-bold">End Interview?</h3>
+              <h3 className="text-lg font-semibold text-slate-900">End interview early?</h3>
             </div>
-
-            <p className="text-gray-600 mb-6">
-              Are you sure you want to finish the interview now?
-              Any incomplete answer will be submitted as-is.
-              This action cannot be undone.
+            <p className="text-sm text-slate-600">
+              This will submit your current response and end the session. This action cannot be undone.
             </p>
-
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setShowFinishModal(false)}
-                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleFinishConfirm}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium shadow-sm transition-colors flex items-center gap-2"
-              >
-                Yes, Finish Interview
-              </button>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <Button variant="secondary" onClick={() => setShowFinishModal(false)}>Cancel</Button>
+              <Button variant="danger" onClick={handleFinishConfirm}>Finish now</Button>
             </div>
-          </div>
+          </Card>
         </div>
-      )}
+      ) : null}
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Live Interview</h1>
-          <p className="text-gray-600">
-            {connected ? (
-              <span className="text-green-600 flex items-center gap-1">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                Connected
-              </span>
-            ) : (
-              <span className="text-red-600">Disconnected</span>
-            )}
-          </p>
-        </div>
-        <div className="text-right flex items-center gap-4">
-          <button
-            onClick={() => setShowFinishModal(true)}
-            className="text-red-600 hover:text-red-700 font-medium text-sm px-3 py-2 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
-            disabled={!connected}
-          >
-            Finish Interview
-          </button>
-          <div>
-            <p className="text-sm text-gray-500">Questions Answered</p>
-            <p className="text-2xl font-bold">{questionsAnswered}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Cheating Warnings */}
-      {cheatingWarnings.length > 0 && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-yellow-800 font-medium mb-2">
-            <AlertTriangle className="w-5 h-5" />
-            Integrity Warnings ({cheatingWarnings.length})
-          </div>
-          {cheatingWarnings.map((w, i) => (
-            <p key={i} className="text-sm text-yellow-700">{w}</p>
-          ))}
-        </div>
-      )}
-
-      {/* Main Interview Area */}
-      {phase === 'idle' && (
-        <div className="card text-center py-16">
-          <Mic className="w-16 h-16 text-primary-500 mx-auto mb-6" />
-          <h2 className="text-2xl font-bold mb-4">Ready to Begin?</h2>
-          <p className="text-gray-600 mb-8 max-w-md mx-auto">
-            The AI interviewer will ask questions across multiple technical topics.
-            You will have time to read each question before answering.
-          </p>
-          <button
-            className="btn-primary text-lg px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={startInterview}
-            disabled={!connected}
-          >
-            {connected ? 'Start Interview' : 'Connecting...'}
-          </button>
-        </div>
-      )}
-
-      {(phase === 'reading' || phase === 'answering' || phase === 'processing') && currentQuestion && (
-        <div className="space-y-6">
-          {/* Timer Bar */}
-          <div className={`rounded-xl p-4 flex items-center justify-between ${phase === 'reading' ? 'bg-blue-50 border border-blue-200' :
-            phase === 'answering' ? 'bg-green-50 border border-green-200' :
-              'bg-gray-50 border border-gray-200'
-            }`}>
-            <div className="flex items-center gap-3">
-              <Clock className="w-5 h-5" />
-              <span className="font-medium">
-                {phase === 'reading' ? 'Reading Time' :
-                  phase === 'answering' ? 'Answer Time' : 'Processing...'}
-              </span>
+      <div className="mx-auto max-w-5xl space-y-4">
+        <Card>
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold text-slate-900">Interview Session</h1>
+              <div className="mt-2 flex items-center gap-3 text-sm text-slate-600">
+                <span className="inline-flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                  {connected ? 'Connected' : 'Disconnected'}
+                </span>
+                <span>•</span>
+                <span>Question {phase === 'idle' ? questionsAnswered : questionsAnswered + 1}</span>
+                <span>•</span>
+                <span>{transcript.length} submitted</span>
+              </div>
             </div>
-            <span className={`text-2xl font-bold font-mono ${timeLeft <= 10 ? 'text-red-600' : ''
-              }`}>
-              {formatTime(timeLeft)}
-            </span>
+            <Button
+              variant="danger"
+              onClick={handleFinishInterview}
+              disabled={!connected || phase === 'idle'}
+            >
+              Finish Interview Early
+            </Button>
           </div>
+        </Card>
 
-          {/* Question Card */}
-          <div className="card">
-            <div className="flex items-center gap-2 text-sm text-gray-500 mb-3">
-              <span className="badge-blue">{currentQuestion.pillar}</span>
-              <span>Question {currentQuestion.question_number}</span>
-              {currentQuestion.is_follow_up && (
-                <span className="badge-yellow">Follow-up</span>
-              )}
+        {cheatingWarnings.length > 0 ? (
+          <Card className="border-amber-200 bg-amber-50">
+            <div className="mb-2 flex items-center gap-2 text-amber-700">
+              <AlertTriangle className="h-4 w-4" />
+              <p className="text-sm font-semibold">Integrity warnings ({cheatingWarnings.length})</p>
             </div>
-            <p className="text-xl font-medium leading-relaxed">
-              {currentQuestion.question_text}
+            <div className="space-y-1.5 pl-6 text-sm text-amber-800">
+              {cheatingWarnings.map((warning, index) => (
+                <p key={index}>{warning}</p>
+              ))}
+            </div>
+          </Card>
+        ) : null}
+
+        {phase === 'idle' ? (
+          <Card className="py-14 text-center">
+            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-primary-100">
+              <Play className="h-8 w-8 text-primary-700" />
+            </div>
+            <h2 className="text-2xl font-semibold text-slate-900">Ready to begin?</h2>
+            <p className="mx-auto mt-3 max-w-xl text-sm text-slate-600">
+              You will receive AI-generated questions one by one. Read carefully, then answer clearly when recording starts.
             </p>
-          </div>
+            <div className="mt-8">
+              <Button onClick={startInterview} disabled={!connected}>
+                {connected ? 'Start interview' : 'Connecting...'}
+              </Button>
+            </div>
+          </Card>
+        ) : null}
 
-          {/* Answer Area - Voice Only */}
-          {phase === 'answering' && (
-            <div className="card flex flex-col items-center justify-center py-10 space-y-6">
-
-              {!recording ? (
-                <div className="flex flex-col items-center gap-2">
-                  <span className="relative flex h-6 w-6">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-6 w-6 bg-green-500"></span>
-                  </span>
-                  <p className="text-gray-600 font-medium">Recording will start automatically...</p>
+        {(phase === 'reading' || phase === 'answering' || phase === 'processing') && currentQuestion ? (
+          <>
+            <Card className={phase === 'answering' ? 'border-secondary-200 bg-secondary-50/50' : phase === 'reading' ? 'border-blue-200 bg-blue-50/50' : ''}>
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100">
+                    <Clock className="h-5 w-5 text-slate-700" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      {phase === 'reading' ? 'Reading time' : phase === 'answering' ? 'Answer time' : 'Processing'}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      {phase === 'reading' ? 'Read the question before answering.' : phase === 'answering' ? 'Speak your response clearly.' : 'Analyzing your response...'}
+                    </p>
+                  </div>
                 </div>
-              ) : (
-                <>
-                  <div className="flex flex-col items-center gap-2">
-                    <span className="relative flex h-6 w-6">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-6 w-6 bg-red-500"></span>
-                    </span>
-                    <p className="text-red-600 font-medium animate-pulse">Recording ({formatTime(timeLeft)})...</p>
-                  </div>
-
-                  {/* Live Transcript Display */}
-                  <div className="w-full max-w-2xl bg-gray-50 p-4 rounded-lg border border-gray-200 min-h-[100px]">
-                    <p className="text-sm text-gray-500 mb-2">Live Transcript:</p>
-                    <p className="text-gray-800 whitespace-pre-wrap">{answerText || "Listening..."}</p>
-                  </div>
-
-                  <button
-                    className="btn-primary bg-green-600 hover:bg-green-700 flex items-center gap-2 px-8 py-4 text-lg"
-                    onClick={() => {
-                      // Explicitly stop and submit
-                      stopRecording();
-                      setPhase('processing');
-                      setQuestionsAnswered((q) => q + 1);
-                      if (currentQuestion) {
-                        setTranscript((p) => [...p, { q: currentQuestion.question_text, a: answerText }]);
-                      }
-                      wsRef.current?.send(JSON.stringify({
-                        type: 'answer_complete',
-                        data: { text: '' },
-                      }));
-                    }}
-                  >
-                    <CheckCircle className="w-6 h-6" /> Submit & Next
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          {phase === 'processing' && (
-            <div className="card text-center py-8">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary-600 mx-auto mb-4" />
-              <p className="text-gray-600">AI is analyzing your answer...</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Transcript History */}
-      {transcript.length > 0 && (
-        <div className="card">
-          <h3 className="font-semibold mb-4">Session History</h3>
-          <div className="space-y-4">
-            {transcript.map((t, i) => (
-              <div key={i} className="border-l-4 border-primary-200 pl-4">
-                <p className="text-sm text-gray-500">Q{i + 1}</p>
-                <p className="font-medium">{t.q}</p>
-                <p className="text-gray-600 mt-1">{t.a || '(Voice response)'}</p>
+                <p className={`text-4xl font-semibold tabular-nums ${timeLeft <= 10 ? 'text-rose-600' : 'text-slate-900'}`}>
+                  {formatTime(timeLeft)}
+                </p>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </Card>
+
+            <Card>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <Badge variant="info">{currentQuestion.pillar}</Badge>
+                <Badge variant="neutral">Question {currentQuestion.question_number}</Badge>
+                {currentQuestion.is_follow_up ? <Badge variant="warning">Follow-up</Badge> : null}
+              </div>
+              <p className="text-xl font-medium leading-relaxed text-slate-900">{currentQuestion.question_text}</p>
+            </Card>
+
+            {phase === 'answering' ? (
+              <Card>
+                {!recording ? (
+                  <div className="py-10 text-center">
+                    <Loader className="justify-center" label="Starting microphone recording" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-5 flex items-center justify-center gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3">
+                      <span className="relative flex h-3 w-3">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-500 opacity-75" />
+                        <span className="relative inline-flex h-3 w-3 rounded-full bg-rose-600" />
+                      </span>
+                      <p className="text-sm font-semibold text-rose-700">Recording in progress • {formatTime(timeLeft)} remaining</p>
+                    </div>
+
+                    <div className="min-h-[140px] rounded-lg border border-slate-200 bg-slate-50 p-4">
+                      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        <Radio className="h-3.5 w-3.5" />
+                        Live transcript
+                      </div>
+                      <p className="text-sm leading-relaxed text-slate-700">{answerText || 'Listening...'}</p>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <Button onClick={submitAnswer}>
+                        <CheckCircle className="h-4 w-4" />
+                        Submit Answer
+                      </Button>
+                      <Button variant="secondary" onClick={handleFinishInterview}>
+                        <XCircle className="h-4 w-4" />
+                        End Interview
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </Card>
+            ) : null}
+
+            {phase === 'processing' ? (
+              <Card className="py-10 text-center">
+                <Loader className="justify-center" label="AI is analyzing your answer" />
+              </Card>
+            ) : null}
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }

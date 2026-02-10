@@ -20,17 +20,22 @@ class CognitoService:
     """Handles AWS Cognito authentication for recruiters."""
 
     def __init__(self):
+        self.user_pool_id = settings.COGNITO_USER_POOL_ID
+        self.client_id = settings.COGNITO_APP_CLIENT_ID
+        
+        # Derive region from user_pool_id (e.g., "ap-south-1_xxxx" -> "ap-south-1")
+        self.region = self.user_pool_id.split("_")[0] if "_" in self.user_pool_id else settings.AWS_REGION
+        
         self.client = boto3.client(
             "cognito-idp",
-            region_name=settings.AWS_REGION,
+            region_name=self.region,
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
         )
-        self.user_pool_id = settings.COGNITO_USER_POOL_ID
-        self.client_id = settings.COGNITO_APP_CLIENT_ID
+
         self._jwks = None
         self._jwks_url = (
-            f"https://cognito-idp.{settings.AWS_REGION}.amazonaws.com/"
+            f"https://cognito-idp.{self.region}.amazonaws.com/"
             f"{self.user_pool_id}/.well-known/jwks.json"
         )
 
@@ -202,7 +207,7 @@ class CognitoService:
                 key,
                 algorithms=["RS256"],
                 audience=self.client_id,
-                issuer=f"https://cognito-idp.{settings.AWS_REGION}.amazonaws.com/{self.user_pool_id}",
+                issuer=f"https://cognito-idp.{self.region}.amazonaws.com/{self.user_pool_id}",
             )
             
             return payload

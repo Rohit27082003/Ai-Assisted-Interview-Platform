@@ -17,23 +17,48 @@ export function useAudioRecorder({
   const start = useCallback(async () => {
     try {
       setError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : 'audio/mp4',
+
+      // Request microphone with optimal settings for AWS Transcribe
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,          // Mono audio
+          sampleRate: 48000,        // 48kHz - matches backend TRANSCRIBE_SAMPLE_RATE
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
       });
+
+      // CRITICAL: Use ogg-opus format (AWS Transcribe compatible)
+      // AWS only accepts: ogg-opus, pcm, flac, g711-ulaw, g711-alaw, g729
+      // Browser default webm-opus is NOT supported by AWS!
+      const mimeType = 'audio/ogg; codecs=opus';
+
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        console.warn('ogg-opus not supported, browser may not be compatible');
+        setError('Browser does not support required audio format. Please use Chrome, Firefox, or Edge.');
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: mimeType,
+        audioBitsPerSecond: 48000,
+      });
+
       mediaRecorderRef.current = mediaRecorder;
       sequenceRef.current = 0;
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
+          console.log(`Audio chunk: ${event.data.size} bytes, type: ${event.data.type}`);
           onChunk?.(event.data, sequenceRef.current++);
         }
       };
 
       mediaRecorder.start(chunkInterval);
       setRecording(true);
+      console.log('✅ Recording started with ogg-opus format');
     } catch (err) {
       setError('Microphone access denied or unavailable');
       console.error('Audio recording error:', err);

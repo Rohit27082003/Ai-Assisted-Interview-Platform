@@ -72,7 +72,7 @@ async def answer_analyzer_node(state: InterviewState) -> Dict[str, Any]:
     question = last_record.get("question_text", "")
     answer = last_record.get("answer_text", "")
 
-    if not answer or answer.startswith("[TIMEOUT"):
+    if not answer or answer.startswith("[TIMEOUT") or answer == "(No answer provided)":
         logger.info("No answer to analyze (timeout or empty)")
         # Create empty signals indicating no response
         signals = {
@@ -84,7 +84,17 @@ async def answer_analyzer_node(state: InterviewState) -> Dict[str, Any]:
             "has_probeable_gaps": False,
             "analysis_summary": "No answer provided",
         }
+
+        # KEY FIX: Update question_records to reflect the empty answer
+        updated_records = question_records.copy()
+        updated_records[-1] = {
+            **last_record,
+            "answer_text": answer or "(No answer provided)",
+            "evaluation_signals": signals,
+        }
+
         return {
+            "question_records": updated_records,
             "last_analysis_signals": signals,
             "phase": InterviewPhase.QUESTIONING.value,
             "updated_at": datetime.utcnow().isoformat(),
@@ -241,6 +251,16 @@ def _process_cheating_signals(
 
     updates: Dict[str, Any] = {}
 
+    # Check for question repetition - this is a high-severity violation
+    if cheating_output.question_repetition_detected or cheating_output.question_repetition_score >= 7.0:
+        logger.warning(f"Question repetition detected: score={cheating_output.question_repetition_score}")
+        # Add extra penalty for question repetition
+        severity_boost = 2.0
+        cheating_output.suspicion_score = min(10.0, cheating_output.suspicion_score + severity_boost)
+        if "Question repetition detected" not in cheating_output.pattern_flags:
+            cheating_output.pattern_flags.append("Question repetition instead of answering")
+        cheating_output.is_suspicious = True
+
     if cheating_output.is_suspicious:
         # Add new flag
         new_flag = {
@@ -248,12 +268,15 @@ def _process_cheating_signals(
             "timestamp": datetime.utcnow().isoformat(),
             "reason": cheating_output.reasoning,
             "severity": cheating_output.suspicion_score,
+            "question_repetition": cheating_output.question_repetition_detected,
             "details": {
                 "pattern_flags": cheating_output.pattern_flags,
+                "question_repetition_score": cheating_output.question_repetition_score,
                 "parroting_score": cheating_output.question_parroting_score,
                 "fluency_score": cheating_output.unnatural_fluency_score,
                 "timing_flag": cheating_output.response_timing_flag,
                 "vocabulary_mismatch": cheating_output.vocabulary_mismatch,
+                "external_help": cheating_output.external_help_indicators,
             },
         }
         updated_flags = existing_flags + [new_flag]
@@ -263,6 +286,7 @@ def _process_cheating_signals(
         new_score = min(10.0, new_score)
 
         # Determine escalation
+        old_level = current_level
         new_level = current_level
         if new_score >= CHEATING_THRESHOLDS["penalty"]:
             new_level = CheatingLevel.PENALTY.value
@@ -276,6 +300,12 @@ def _process_cheating_signals(
             "cheating_score": new_score,
             "cheating_level": new_level,
         }
+
+        # Store warning message if level escalated (to be sent to candidate)
+        if new_level != old_level and new_level != CheatingLevel.NONE.value:
+            warning_message = _get_warning_message(new_level, cheating_output)
+            updates["_pending_warning_message"] = warning_message
+            logger.info(f"Cheating warning prepared: {new_level}")
 
         # Check for hard violation
         if new_level == CheatingLevel.PENALTY.value:
@@ -336,3 +366,25 @@ def _estimate_candidate_level(state: InterviewState) -> str:
         return "intermediate"
     else:
         return "beginner"
+
+
+def _get_warning_message(cheating_level: str, cheating_output: CheatingDetectionOutput) -> str:
+    """Generate appropriate warning message based on cheating level."""
+    if cheating_level == CheatingLevel.WARNING_1.value:
+        return (
+            "⚠️ First Warning: Please ensure you are answering in your own words without external assistance. "
+            "We've detected patterns that may indicate misconduct."
+        )
+    elif cheating_level == CheatingLevel.WARNING_2.value:
+        return (
+            "⚠️⚠️ Second Warning: We have detected multiple instances of concerning behavior. "
+            "Further violations will result in immediate interview termination. "
+            "Please answer questions independently and in your own words."
+        )
+    elif cheating_level == CheatingLevel.PENALTY.value:
+        return (
+            "❌ Final Warning: Your interview has been flagged for serious misconduct. "
+            "This interview may be terminated or heavily penalized in evaluation."
+        )
+    else:
+        return "Please continue answering questions honestly and independently."
