@@ -34,6 +34,7 @@ from app.schemas.state import (
     get_current_pillar,
 )
 from app.core.logging import get_logger
+from app.utils.datetime_helpers import parse_iso_datetime
 
 logger = get_logger(__name__)
 
@@ -66,9 +67,6 @@ class RouterConfig:
 
     # Timing (in minutes)
     interview_timeout_minutes: int = 60
-
-    # LLM assistance
-    use_llm_for_edge_cases: bool = True
 
 
 DEFAULT_CONFIG = RouterConfig()
@@ -191,15 +189,7 @@ def _check_interview_timeout(state: InterviewState, config: RouterConfig) -> Gua
             priority=3,
         )
 
-    # Parse start time
-    if isinstance(interview_started, str):
-        start_time = datetime.fromisoformat(interview_started.replace("Z", "+00:00"))
-    else:
-        start_time = interview_started
-
-    # Make timezone aware if needed
-    if start_time.tzinfo is None:
-        start_time = start_time.replace(tzinfo=timezone.utc)
+    start_time = parse_iso_datetime(interview_started)
 
     now = datetime.now(timezone.utc)
     elapsed_minutes = (now - start_time).total_seconds() / 60

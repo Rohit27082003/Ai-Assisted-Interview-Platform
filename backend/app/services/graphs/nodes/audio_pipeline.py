@@ -23,8 +23,21 @@ from app.schemas.state import (
     InterviewPhase,
 )
 from app.core.logging import get_logger
+from app.utils.datetime_helpers import parse_iso_datetime
 
 logger = get_logger(__name__)
+
+
+def _update_question_record(
+    records: list, question_id: str, updates: Dict[str, Any]
+) -> list:
+    """Update a specific question record by question_id, returning a new list."""
+    updated = records.copy()
+    for i, record in enumerate(updated):
+        if record.get("question_id") == question_id:
+            updated[i] = {**record, **updates}
+            break
+    return updated
 
 
 async def audio_pipeline_node(
@@ -69,23 +82,13 @@ async def audio_pipeline_node(
     answer_time_used = None
 
     if question_displayed_at:
-        if isinstance(question_displayed_at, str):
-            displayed_at = datetime.fromisoformat(question_displayed_at.replace("Z", "+00:00"))
-            if displayed_at.tzinfo is None:
-                displayed_at = displayed_at.replace(tzinfo=timezone.utc)
-        else:
-            displayed_at = question_displayed_at
+        displayed_at = parse_iso_datetime(question_displayed_at)
 
         total_time = (now - displayed_at).total_seconds()
         reading_buffer = timing.get("reading_buffer_seconds", 20)
 
         if answer_started_at:
-            if isinstance(answer_started_at, str):
-                started_at = datetime.fromisoformat(answer_started_at.replace("Z", "+00:00"))
-                if started_at.tzinfo is None:
-                    started_at = started_at.replace(tzinfo=timezone.utc)
-            else:
-                started_at = answer_started_at
+            started_at = parse_iso_datetime(answer_started_at)
             reading_time_used = (started_at - displayed_at).total_seconds()
             answer_time_used = (now - started_at).total_seconds()
         else:
@@ -94,19 +97,17 @@ async def audio_pipeline_node(
             answer_time_used = max(0, total_time - reading_time_used)
 
     # Update the question record with answer
-    question_records = state.get("question_records", [])
-    updated_records = question_records.copy()
-
-    for i, record in enumerate(updated_records):
-        if record.get("question_id") == current_question_id:
-            updated_record = record.copy()
-            updated_record["answer_text"] = answer_text
-            updated_record["answer_audio_url"] = audio_url
-            updated_record["answer_received_at"] = now.isoformat()
-            updated_record["reading_time_used"] = reading_time_used
-            updated_record["answer_time_used"] = answer_time_used
-            updated_records[i] = updated_record
-            break
+    updated_records = _update_question_record(
+        state.get("question_records", []),
+        current_question_id,
+        {
+            "answer_text": answer_text,
+            "answer_audio_url": audio_url,
+            "answer_received_at": now.isoformat(),
+            "reading_time_used": reading_time_used,
+            "answer_time_used": answer_time_used,
+        },
+    )
 
     # Add to message history
     message_history = []
@@ -148,68 +149,10 @@ def _check_timing_violation(timing: Dict[str, Any]) -> Optional[str]:
 
     now = datetime.now(timezone.utc)
 
-    if isinstance(answer_deadline, str):
-        deadline = datetime.fromisoformat(answer_deadline.replace("Z", "+00:00"))
-        if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=timezone.utc)
-    else:
-        deadline = answer_deadline
+    deadline = parse_iso_datetime(answer_deadline)
 
     if now > deadline:
         overtime = (now - deadline).total_seconds()
         return f"Answer submitted {overtime:.1f}s past deadline"
 
     return None
-
-
-async def handle_timeout(state: InterviewState) -> Dict[str, Any]:
-    """
-    Handle answer timeout - called when timing window expires.
-
-    Args:
-        state: Current interview state
-
-    Returns:
-        State updates with timeout recorded
-    """
-    current_question_id = state.get("current_question_id")
-    now = datetime.now(timezone.utc)
-
-    logger.warning(f"Answer timeout for question {current_question_id}")
-
-    # Update question record with timeout
-    question_records = state.get("question_records", [])
-    updated_records = question_records.copy()
-
-    for i, record in enumerate(updated_records):
-        if record.get("question_id") == current_question_id:
-            updated_record = record.copy()
-            updated_record["answer_text"] = "[TIMEOUT - No answer provided]"
-            updated_record["answer_received_at"] = now.isoformat()
-            updated_record["answer_time_used"] = 0
-            updated_records[i] = updated_record
-            break
-
-    return {
-        "question_records": updated_records,
-        "awaiting_answer": False,
-        "phase": InterviewPhase.ANALYZING.value,
-        "updated_at": now.isoformat(),
-    }
-
-
-def start_answer_timer(state: InterviewState) -> Dict[str, Any]:
-    """
-    Mark when candidate starts answering (after reading period).
-
-    Args:
-        state: Current interview state
-
-    Returns:
-        State update with answer start time
-    """
-    now = datetime.now(timezone.utc)
-    timing = state.get("timing", {}).copy()
-    timing["answer_started_at"] = now.isoformat()
-
-    return {"timing": timing}

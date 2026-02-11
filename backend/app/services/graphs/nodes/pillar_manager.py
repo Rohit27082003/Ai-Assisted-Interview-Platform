@@ -13,7 +13,7 @@ This node does NOT make routing decisions - only the router does that.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from app.schemas.state import (
@@ -76,7 +76,7 @@ async def pillar_manager_node(state: InterviewState) -> Dict[str, Any]:
     else:
         # Normal flow - just update metadata
         updates = {
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     # Log the transition
@@ -117,7 +117,7 @@ def _initialize_interview(state: InterviewState) -> Dict[str, Any]:
         "questions_in_current_pillar": 0,
         "follow_ups_in_current_pillar": 0,
         "awaiting_answer": False,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -156,7 +156,7 @@ def _transition_to_next_pillar(state: InterviewState) -> Dict[str, Any]:
         "follow_ups_in_current_pillar": 0,
         "phase": InterviewPhase.QUESTIONING.value,
         "router_decision": RouterDecision.CONTINUE_PILLAR.value,  # Reset for new pillar
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -184,7 +184,7 @@ def _finalize_interview(state: InterviewState, reason: str) -> Dict[str, Any]:
         "focus_areas": updated_focus_areas,
         "phase": final_phase,
         "awaiting_answer": False,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

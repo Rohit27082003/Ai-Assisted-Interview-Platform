@@ -19,6 +19,11 @@ export default function InterviewPage() {
   const audioChunksRef = useRef<Blob[]>([]);
   const sequenceRef = useRef(0);
 
+  // Guards against race conditions (Issues #3, #8)
+  const answerSubmittedRef = useRef(false);
+  const recordingStartedRef = useRef(false);
+  const finishRequestedRef = useRef(false);
+
   const [connected, setConnected] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const [currentQuestion, setCurrentQuestion] = useState<InterviewQuestion | null>(null);
@@ -63,6 +68,10 @@ export default function InterviewPage() {
   }, []);
 
   const finalizeSubmission = useCallback(() => {
+    // Guard: prevent double submission for the same question
+    if (answerSubmittedRef.current) return;
+    answerSubmittedRef.current = true;
+
     setPhase('processing');
     setQuestionsAnswered((q) => q + 1);
 
@@ -74,9 +83,24 @@ export default function InterviewPage() {
       type: 'answer_complete',
       data: { text: answerTextRef.current },
     }));
+
+    // If user requested to finish the interview, send request_finish after answer is submitted
+    if (finishRequestedRef.current) {
+      finishRequestedRef.current = false;
+      setTimeout(() => {
+        wsRef.current?.send(JSON.stringify({
+          type: 'request_finish',
+          data: {}
+        }));
+      }, 500);
+    }
   }, []);
 
   const startRecording = useCallback(async () => {
+    // Guard: prevent double recording start for the same question
+    if (recordingStartedRef.current) return;
+    recordingStartedRef.current = true;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -88,17 +112,24 @@ export default function InterviewPage() {
         }
       });
 
-      const mimeType = 'audio/ogg; codecs=opus';
+      // Format fallback: ogg-opus (Firefox) → webm-opus (Chrome/Edge) → webm (fallback)
+      const formatCandidates = [
+        'audio/ogg; codecs=opus',
+        'audio/webm; codecs=opus',
+        'audio/webm',
+      ];
+      const mimeType = formatCandidates.find(fmt => MediaRecorder.isTypeSupported(fmt));
 
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        toast.error('Browser does not support required audio format (ogg-opus). Please use Chrome, Firefox, or Edge.');
+      if (!mimeType) {
+        toast.error('Browser does not support required audio format. Please use Chrome, Firefox, or Edge.');
         stream.getTracks().forEach(t => t.stop());
+        recordingStartedRef.current = false;
         return;
       }
 
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType,
-        audioBitsPerSecond: 48000,
+        audioBitsPerSecond: 128000,
       });
 
       mediaRecorderRef.current = mediaRecorder;
@@ -113,7 +144,7 @@ export default function InterviewPage() {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({
                 type: 'audio_chunk',
-                data: { chunk: base64, sequence: sequenceRef.current++ },
+                data: { chunk: base64, sequence: sequenceRef.current++, mime_type: mimeType },
               }));
             }
           };
@@ -132,12 +163,16 @@ export default function InterviewPage() {
     } catch (err) {
       toast.error('Microphone access denied');
       console.error('Recording error:', err);
+      recordingStartedRef.current = false;
     }
   }, [finalizeSubmission]);
 
   const submitAnswer = useCallback(() => {
+    if (answerSubmittedRef.current) return;
+
     if (mediaRecorderRef.current?.state === 'recording') {
       stopRecording();
+      // finalizeSubmission will be called by mediaRecorder.onstop
     } else {
       finalizeSubmission();
     }
@@ -149,26 +184,30 @@ export default function InterviewPage() {
 
   const handleFinishConfirm = () => {
     setShowFinishModal(false);
-    stopRecording();
+    finishRequestedRef.current = true;
 
     if (phase === 'answering') {
-      wsRef.current?.send(JSON.stringify({
-        type: 'answer_complete',
-        data: { text: answerText },
-      }));
-    }
-
-    setTimeout(() => {
+      // Submit the current answer first; finalizeSubmission will send
+      // request_finish afterwards because finishRequestedRef is set
+      submitAnswer();
+    } else {
+      // Not answering — just request finish directly
+      finishRequestedRef.current = false;
       wsRef.current?.send(JSON.stringify({
         type: 'request_finish',
         data: {}
       }));
-    }, 500);
+    }
   };
 
   const handleWSMessage = useCallback((msg: WSMessage) => {
     switch (msg.type) {
       case 'question':
+        // Reset per-question guards
+        answerSubmittedRef.current = false;
+        recordingStartedRef.current = false;
+        sequenceRef.current = 0;
+
         setCurrentQuestion({
           question_text: msg.data.question_text,
           pillar: msg.data.pillar,
@@ -184,6 +223,16 @@ export default function InterviewPage() {
 
       case 'timer':
         setTimeLeft(msg.data.seconds_left);
+
+        // Reading phase expired → transition to answering
+        if (msg.data.phase === 'reading' && msg.data.seconds_left === 0 && phaseRef.current === 'reading') {
+          setPhase('answering');
+          startRecording();
+          // Notify backend to start server-side answering timer
+          wsRef.current?.send(JSON.stringify({ type: 'answer_started', data: {} }));
+        }
+
+        // Server says answering phase (e.g. on reconnect with running answering timer)
         if (msg.data.phase === 'answering') {
           if (phaseRef.current !== 'answering') {
             setPhase('answering');
@@ -191,6 +240,8 @@ export default function InterviewPage() {
           }
           setTimeLeft(msg.data.seconds_left);
         }
+
+        // Answering time expired → auto-submit
         if (msg.data.auto_closed) {
           submitAnswer();
         }
@@ -220,6 +271,10 @@ export default function InterviewPage() {
         break;
 
       case 'restore_state': {
+        // Reset guards on state restore
+        answerSubmittedRef.current = false;
+        recordingStartedRef.current = false;
+
         const state = msg.data;
         if (state.question) {
           setCurrentQuestion(state.question);
@@ -232,11 +287,13 @@ export default function InterviewPage() {
 
         if (state.phase === 'reading') {
           setPhase('reading');
-          setTimeLeft(state.time_left);
+          setTimeLeft(state.time_left || 0);
         } else if (state.phase === 'answering') {
           setPhase('answering');
-          setTimeLeft(state.time_left);
+          setTimeLeft(state.time_left || 0);
           startRecording();
+          // Notify backend in case answering timer needs restarting
+          wsRef.current?.send(JSON.stringify({ type: 'answer_started', data: {} }));
         } else {
           setPhase('idle');
         }
@@ -310,26 +367,8 @@ export default function InterviewPage() {
     };
   }, [connected, phase]);
 
-  useEffect(() => {
-    if (phase === 'idle' || phase === 'complete' || phase === 'processing' || phase === 'terminated') return;
-
-    if (timeLeft === 0) {
-      if (phase === 'reading') {
-        setPhase('answering');
-        setTimeLeft(currentQuestion?.answer_time_seconds || 60);
-        startRecording();
-      } else if (phase === 'answering') {
-        submitAnswer();
-      }
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setTimeLeft((t) => t - 1);
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [timeLeft, phase, currentQuestion, startRecording, submitAnswer]);
+  // No local timer — server timer broadcasts are the single source of truth
+  // for both countdown display and phase transitions (Issues #1, #2).
 
   const startInterview = async () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {

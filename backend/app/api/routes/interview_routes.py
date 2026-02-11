@@ -13,8 +13,6 @@ import json
 import base64
 from uuid import UUID
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -22,7 +20,7 @@ from sqlalchemy import select, delete
 from app.core.database import get_db, async_session_factory
 from app.models.models import (
     Candidate, Interview, Transcript, JobDescription,
-    InterviewStatus, CandidateStatus, CheatingLevel,
+    InterviewStatus, CandidateStatus,
     Evaluation, Report, Recommendation,
 )
 from app.schemas.schemas import InterviewStartRequest, InterviewResponse, InterviewProgress
@@ -32,12 +30,7 @@ from app.schemas.state import (
     RouterDecision,
     create_initial_state,
 )
-from app.services.graphs.interview_graph import (
-    build_interview_graph,
-    create_interview_session,
-    resume_with_answer,
-    request_termination,
-)
+from app.services.graphs.interview_graph import build_interview_graph
 from app.services.graphs.postgres_checkpoint import get_postgres_checkpointer
 from app.services.realtime.interview_broadcaster import (
     get_broadcaster,
@@ -50,48 +43,29 @@ from app.services.realtime.interview_broadcaster import (
     create_interview_completed_event,
 )
 
-def serialize_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Helper to serialize LangGraph state for JSON storage."""
-    serialized = {}
-    for k, v in state.items():
-        if isinstance(v, list):
-            new_list = []
-            for item in v:
-                if hasattr(item, "model_dump"):
-                    new_list.append(item.model_dump())
-                elif hasattr(item, "dict"):
-                    new_list.append(item.dict())
-                else:
-                    new_list.append(item)
-            serialized[k] = new_list
-        elif hasattr(v, "model_dump"):
-            serialized[k] = v.model_dump()
-        elif hasattr(v, "dict"):
-            serialized[k] = v.dict()
-        else:
-            serialized[k] = v
-    return serialized
 from app.services.aws.transcribe_service import get_transcribe_service
 from app.services.aws.s3_service import get_s3_service
 from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedUser
+from app.api.utils.db_utils import verify_interview_ownership
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
 # Shared Services imports
-from app.services.realtime.session_manager import active_sessions, pending_cleanups
+from app.services.realtime.session_manager import (
+    active_sessions,
+    register_session,
+    get_session,
+    remove_session,
+    mark_terminated,
+    schedule_cleanup,
+)
 from app.services.graphs.lifecycle import (
     ensure_active_session,
     run_post_interview_analysis,
     handle_disconnect_cleanup,
     delayed_disconnect_cleanup,
 )
-from app.services.graphs.execution import (
-    run_graph_cycle,
-    handle_answer_started,
-    handle_answer_complete,
-    handle_violation,
-    handle_request_finish,
-)
+from app.services.graphs.execution import run_interview_event_loop
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -103,38 +77,6 @@ router = APIRouter(prefix="/api/interviews", tags=["Interviews"])
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def ensure_active_session(
-    interview: Interview,
-    candidate: Candidate,
-    jd: JobDescription,
-):
-    """
-    Ensure the interview session is properly initialized with state.
-    Used by both recruiter start and candidate portal resume.
-    """
-    if not interview.state_json:
-        # Create production-grade initial state
-        initial_state = create_initial_state(
-            interview_id=str(interview.interview_id),
-            candidate_id=str(candidate.candidate_id),
-            jd_id=str(jd.jd_id),
-            candidate_name=candidate.name,
-            candidate_email=candidate.email,
-            job_role=jd.title,
-            job_requirements=jd.parsed_data or {},
-            resume_context=candidate.resume_text or "",
-            focus_areas=candidate.focus_areas or [],
-            config={
-                "reading_buffer_seconds": settings.READING_TIME_SECONDS,
-                "answer_window_seconds": settings.ANSWER_TIME_SECONDS,
-                "max_questions_per_pillar": settings.MAX_QUESTIONS_PER_TOPIC,
-            },
-        )
-        interview.state_json = dict(initial_state)
-
-    if interview.status == InterviewStatus.PENDING:
-        interview.status = InterviewStatus.IN_PROGRESS
-        interview.started_at = datetime.now(timezone.utc)
 
 
 @router.post("/start", response_model=InterviewResponse)
@@ -213,21 +155,7 @@ async def get_interview(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Get interview details with current state."""
-    # Join with Candidate -> JD to verify ownership
-    query = (
-        select(Interview)
-        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
-        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
-        .where(
-            Interview.interview_id == interview_id,
-            JobDescription.recruiter_id == user.recruiter_id
-        )
-    )
-    result = await db.execute(query)
-    interview = result.scalar_one_or_none()
-    
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = await verify_interview_ownership(db, interview_id, user.recruiter_id)
 
     state = interview.state_json or {}
 
@@ -266,21 +194,7 @@ async def get_progress(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Get current interview progress for monitoring."""
-    # Join with Candidate -> JD to verify ownership
-    query = (
-        select(Interview)
-        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
-        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
-        .where(
-            Interview.interview_id == interview_id,
-            JobDescription.recruiter_id == user.recruiter_id
-        )
-    )
-    result = await db.execute(query)
-    interview = result.scalar_one_or_none()
-
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = await verify_interview_ownership(db, interview_id, user.recruiter_id)
 
     state = interview.state_json or {}
     is_active = str(interview_id) in active_sessions
@@ -363,21 +277,7 @@ async def terminate_interview(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Terminate an interview immediately (recruiter action)."""
-    # Join with Candidate -> JD to verify ownership
-    query = (
-        select(Interview)
-        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
-        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
-        .where(
-            Interview.interview_id == interview_id,
-            JobDescription.recruiter_id == user.recruiter_id
-        )
-    )
-    result = await db.execute(query)
-    interview = result.scalar_one_or_none()
-
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = await verify_interview_ownership(db, interview_id, user.recruiter_id)
 
     if interview.status in [InterviewStatus.COMPLETED, InterviewStatus.TERMINATED]:
         raise HTTPException(status_code=400, detail="Interview already ended")
@@ -399,7 +299,7 @@ async def terminate_interview(
 
     # Signal active session
     if str(interview_id) in active_sessions:
-        active_sessions[str(interview_id)]["terminated"] = True
+        mark_terminated(str(interview_id))
 
     # Broadcast termination
     broadcaster = get_broadcaster()
@@ -433,20 +333,8 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
     await websocket.accept()
     logger.info(f"WebSocket connected for interview {interview_id}")
 
-    # Cancel any pending cleanup for this interview (user returned)
-    if interview_id in pending_cleanups:
-        logger.info(f"Cancelling pending cleanup for {interview_id} - reconnected")
-        pending_cleanups[interview_id].cancel()
-        pending_cleanups.pop(interview_id, None)
-
-    # Register active session
-    active_sessions[interview_id] = {
-        "websocket": websocket,
-        "connected_at": datetime.now(timezone.utc),
-        "stream_id": f"stream-{interview_id}",
-        "answer_buffer": "",
-        "terminated": False
-    }
+    # Register active session (also cancels any pending cleanup)
+    register_session(interview_id, websocket)
 
     transcribe_service = get_transcribe_service()
     broadcaster = get_broadcaster()
@@ -521,7 +409,7 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
             time_left = 0
             
             timing = state.get("timing", {})
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             
             if current_phase == "reading" and "reading_deadline" in timing:
                 deadline = datetime.fromisoformat(timing["reading_deadline"])
@@ -561,14 +449,8 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
                 "data": restore_data
             })
 
-    # Register active session again (ensure fields)
-    active_sessions[interview_id] = {
-        "websocket": websocket,
-        "terminated": False,
-        "stream_id": f"stream-{interview_id}",
-        "answer_buffer": "",
-        "connected_at": datetime.now(timezone.utc)
-    }
+    # Re-register session to ensure fields are up to date after state restore
+    register_session(interview_id, websocket)
 
     # Broadcast interview started
     await broadcaster.broadcast(
@@ -583,80 +465,9 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
     )
 
     try:
-        while True:
-            # Check for termination
-            session = active_sessions.get(interview_id, {})
-            if session.get("terminated"):
-                await websocket.send_json({
-                    "type": "terminated",
-                    "data": {"message": "Interview terminated by recruiter"}
-                })
-                break
-
-            # Receive message
-            raw_msg = await websocket.receive_text()
-            msg = json.loads(raw_msg)
-            msg_type = msg.get("type", "")
-            
-            logger.info(f"WS MESSAGE [{interview_id}]: type={msg_type}")
-
-            if msg_type == "start":
-                # Start or resume the interview graph
-                await run_graph_cycle(
-                    graph, config, websocket, interview_id, broadcaster
-                )
-
-            elif msg_type == "audio_chunk":
-                # Process audio chunk for transcription
-                chunk_data = msg.get("data", {})
-                audio_bytes = base64.b64decode(chunk_data.get("chunk", ""))
-                stream_id = active_sessions[interview_id]["stream_id"]
-                
-                # Start stream if not active
-                if not transcribe_service.is_active(stream_id):
-                    async def on_partial(text):
-                        try:
-                            # Verify session is still active/valid
-                            if interview_id in active_sessions:
-                                await websocket.send_json({
-                                    "type": "transcript_partial",
-                                    "data": {"text": text}
-                                })
-                        except Exception as e:
-                            logger.error(f"Failed to send partial transcript: {e}")
-
-                    await transcribe_service.start_stream(
-                        interview_id,
-                        on_partial=on_partial
-                    )
-
-                await transcribe_service.feed_audio(stream_id, audio_bytes)
-
-            elif msg_type == "answer_started":
-                # Candidate started answering (after reading period)
-                await handle_answer_started(graph, config, interview_id)
-
-            elif msg_type == "answer_complete":
-                # Process completed answer
-                logger.info(f"Processing answer_complete for {interview_id}")
-                await handle_answer_complete(
-                    graph, config, websocket, interview_id,
-                    msg.get("data", {}), transcribe_service, broadcaster
-                )
-
-            elif msg_type == "violation":
-                # Handle cheating/violation report
-                await handle_violation(
-                    graph, config, interview_id,
-                    msg.get("data", {}), broadcaster
-                )
-
-            elif msg_type == "request_finish":
-                # Candidate requested to finish interview early
-                await handle_request_finish(
-                    websocket, interview_id, broadcaster
-                )
-                break
+        await run_interview_event_loop(
+            graph, config, websocket, interview_id, transcribe_service, broadcaster
+        )
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {interview_id}")
@@ -664,12 +475,12 @@ async def interview_websocket(websocket: WebSocket, interview_id: str):
         logger.error(f"WebSocket error for {interview_id}: {e}", exc_info=True)
     finally:
         # Cleanup session tracking
-        active_sessions.pop(interview_id, None)
+        remove_session(interview_id)
 
         # Schedule delayed cleanup instead of immediate
         # This allows the user to refresh the page without terminating the interview
         task = asyncio.create_task(delayed_disconnect_cleanup(interview_id, broadcaster))
-        pending_cleanups[interview_id] = task
+        schedule_cleanup(interview_id, task)
         
         logger.info(f"WebSocket disconnected for {interview_id}, cleanup scheduled")
 

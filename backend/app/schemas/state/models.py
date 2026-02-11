@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 from .enums import RouterDecision
@@ -39,7 +39,7 @@ class QuestionRecord(BaseModel):
 class CheatingFlag(BaseModel):
     """A single cheating detection flag."""
     question_id: str = Field(..., description="Question this flag relates to")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     reason: str = Field(..., description="Why this was flagged")
     severity: float = Field(..., ge=0, le=10, description="Severity score 0-10")
     details: Optional[Dict[str, Any]] = Field(default=None)
@@ -47,7 +47,7 @@ class CheatingFlag(BaseModel):
 
 class StateTransitionLog(BaseModel):
     """Log entry for state transitions (observability)."""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     from_phase: str
     to_phase: str
     node_name: str

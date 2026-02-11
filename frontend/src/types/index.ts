@@ -30,6 +30,8 @@ export interface Candidate {
   focus_areas: FocusArea[];
   created_at: string;
   interview_id?: string;
+  interview_window_start?: string | null;
+  interview_window_end?: string | null;
   scoring_analysis?: {
     skills_score: number;
     projects_score: number;

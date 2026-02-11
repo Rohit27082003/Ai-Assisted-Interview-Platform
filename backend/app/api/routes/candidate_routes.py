@@ -3,6 +3,7 @@
 from uuid import UUID
 from typing import List
 from pathlib import Path
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,8 @@ from app.schemas.schemas import (
     FocusAreaResponse,
     CandidateSessionInfo,
     GenerateSessionsResponse,
+    CreateSessionRequest,
+    UpdateTimeWindowRequest,
 )
 from app.services.graphs.resume_intelligence import build_resume_intelligence_graph
 from app.services.graphs.focus_area import build_focus_area_graph
@@ -456,23 +459,37 @@ async def rerun_shortlist(
 @router.post("/{jd_id}/generate-sessions", response_model=GenerateSessionsResponse)
 async def generate_candidate_sessions(
     jd_id: UUID,
+    interview_window_start: Optional[datetime] = Query(None, description="Start time for interview access window"),
+    interview_window_end: Optional[datetime] = Query(None, description="End time for interview access window"),
     db: AsyncSession = Depends(get_db),
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """
     Generate session IDs for all shortlisted candidates under a JD.
-    
+
     These session IDs allow candidates to log in to the interview portal
     using their session ID and email address.
+
+    Optionally specify interview_window_start and interview_window_end to restrict
+    when candidates can access the interview. These time windows apply to all
+    candidates in this batch.
     """
     # Get JD
     jd = await db.get(JobDescription, jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
-    
+
     # Verify ownership
     if jd.recruiter_id != user.recruiter_id:
         raise HTTPException(status_code=404, detail="Job description not found")
+
+    # Validate time window if provided
+    if interview_window_start and interview_window_end:
+        if interview_window_start >= interview_window_end:
+            raise HTTPException(
+                status_code=400,
+                detail="interview_window_start must be before interview_window_end"
+            )
 
     # Get shortlisted candidates without existing sessions
     # STRICT: Only generate sessions for candidates who have Focus Areas generated (FOCUS_READY)
@@ -486,7 +503,7 @@ async def generate_candidate_sessions(
 
     if not candidates:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail="No candidates with generated Focus Areas found. Please generate focus areas first."
         )
 
@@ -496,12 +513,25 @@ async def generate_candidate_sessions(
     for candidate in candidates:
         # Generate new session ID (or keep existing if valid)
         if not candidate.session_id or (
-            candidate.session_expires_at and 
+            candidate.session_expires_at and
             candidate.session_expires_at < datetime.now(timezone.utc)
         ):
             candidate.session_id = generate_session_id(settings.SESSION_ID_LENGTH)
             candidate.session_expires_at = session_expiry
             candidate.session_created_at = datetime.now(timezone.utc)
+
+        # Set interview time window - hierarchical approach:
+        # 1. If query params provided, use those (override at candidate level)
+        # 2. If candidate doesn't have window, inherit from JD-level
+        if interview_window_start and interview_window_end:
+            # Explicit override via query parameters
+            candidate.interview_window_start = interview_window_start
+            candidate.interview_window_end = interview_window_end
+        elif not candidate.interview_window_start and not candidate.interview_window_end:
+            # Candidate doesn't have window, inherit from JD if available
+            if jd.interview_window_start and jd.interview_window_end:
+                candidate.interview_window_start = jd.interview_window_start
+                candidate.interview_window_end = jd.interview_window_end
 
         sessions.append(CandidateSessionInfo(
             candidate_id=candidate.candidate_id,
@@ -509,6 +539,8 @@ async def generate_candidate_sessions(
             email=candidate.email,
             session_id=candidate.session_id,
             session_expires_at=candidate.session_expires_at,
+            interview_window_start=candidate.interview_window_start,
+            interview_window_end=candidate.interview_window_end,
         ))
 
     logger.info(f"Generated sessions for {len(sessions)} candidates under JD {jd_id}")
@@ -614,14 +646,18 @@ async def delete_candidate(
 @router.post("/{candidate_id}/session", response_model=CandidateSessionInfo)
 async def create_candidate_session(
     candidate_id: UUID,
+    request: CreateSessionRequest = None,
     db: AsyncSession = Depends(get_db),
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """
     Generate a session for a single candidate and send an email invitation.
+
+    Optionally specify interview_window_start and interview_window_end to restrict
+    when the candidate can access the interview.
     """
     from app.services.email_service import get_email_service
-    
+
     # Verify candidate exists and belongs to recruiter
     query = (
         select(Candidate)
@@ -633,26 +669,55 @@ async def create_candidate_session(
     )
     result = await db.execute(query)
     candidate = result.scalar_one_or_none()
-    
+
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-        
+
+    # Validate time window if provided
+    if request and request.interview_window_start and request.interview_window_end:
+        if request.interview_window_start >= request.interview_window_end:
+            raise HTTPException(
+                status_code=400,
+                detail="interview_window_start must be before interview_window_end"
+            )
+
     # Generate session ID
     session_expiry = datetime.now(timezone.utc) + timedelta(hours=settings.SESSION_EXPIRY_HOURS)
     candidate.session_id = generate_session_id(settings.SESSION_ID_LENGTH)
     candidate.session_expires_at = session_expiry
     candidate.session_created_at = datetime.now(timezone.utc)
+
+    # Set interview time window if provided
+    if request:
+        candidate.interview_window_start = request.interview_window_start
+        candidate.interview_window_end = request.interview_window_end
     
     # Send Email
     email_service = get_email_service()
     login_link = f"http://localhost:5173/candidate/login?session={candidate.session_id}&email={candidate.email}"
-    
+
+    # Format time window message if provided
+    time_window_html = ""
+    if candidate.interview_window_start and candidate.interview_window_end:
+        start_str = candidate.interview_window_start.strftime("%B %d, %Y at %I:%M %p %Z")
+        end_str = candidate.interview_window_end.strftime("%B %d, %Y at %I:%M %p %Z")
+        time_window_html = f"""
+            <p><strong>Interview Time Window:</strong></p>
+            <p>You can access the interview between:</p>
+            <ul>
+                <li><strong>Start:</strong> {start_str}</li>
+                <li><strong>End:</strong> {end_str}</li>
+            </ul>
+            <p style="color: #d9534f;">⚠️ The interview will only be accessible during this time window.</p>
+        """
+
     subject = f"Interview Invitation for {candidate.name}"
     body = f"""
     <html>
         <body>
             <h2>Hello {candidate.name},</h2>
             <p>You have been invited to an AI-assisted interview.</p>
+            {time_window_html}
             <p>Please click the link below to start:</p>
             <p><a href="{login_link}">{login_link}</a></p>
             <p><strong>Session ID:</strong> {candidate.session_id}</p>
@@ -662,16 +727,134 @@ async def create_candidate_session(
         </body>
     </html>
     """
-    
+
     await email_service.send_email(candidate.email, subject, body)
-    
+
     await db.commit()
     logger.info(f"Session generated and email sent for candidate {candidate_id}")
-    
+
     return CandidateSessionInfo(
         candidate_id=candidate.candidate_id,
         name=candidate.name,
         email=candidate.email,
         session_id=candidate.session_id,
         session_expires_at=candidate.session_expires_at,
+        interview_window_start=candidate.interview_window_start,
+        interview_window_end=candidate.interview_window_end,
+    )
+
+
+@router.patch("/{candidate_id}/time-window", response_model=CandidateSessionInfo)
+async def update_candidate_time_window(
+    candidate_id: UUID,
+    request: UpdateTimeWindowRequest,
+    db: AsyncSession = Depends(get_db),
+    user: AuthenticatedUser = Depends(require_recruiter),
+):
+    """
+    Update a candidate's interview time window.
+
+    This allows recruiters to extend, modify, or remove time windows for candidates
+    who may have missed their original slot or need flexibility.
+
+    Set both fields to null to remove the time window restriction entirely.
+    """
+    from app.services.email_service import get_email_service
+
+    # Verify candidate exists and belongs to recruiter
+    query = (
+        select(Candidate)
+        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
+        .where(
+            Candidate.candidate_id == candidate_id,
+            JobDescription.recruiter_id == user.recruiter_id
+        )
+    )
+    result = await db.execute(query)
+    candidate = result.scalar_one_or_none()
+
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # Validate time window if both provided
+    if request.interview_window_start and request.interview_window_end:
+        if request.interview_window_start >= request.interview_window_end:
+            raise HTTPException(
+                status_code=400,
+                detail="interview_window_start must be before interview_window_end"
+            )
+
+    # Store old values for comparison
+    old_start = candidate.interview_window_start
+    old_end = candidate.interview_window_end
+
+    # Update time window (allows setting to None to remove restriction)
+    candidate.interview_window_start = request.interview_window_start
+    candidate.interview_window_end = request.interview_window_end
+
+    await db.commit()
+
+    # Send notification email if requested
+    if request.send_notification and candidate.session_id:
+        email_service = get_email_service()
+        login_link = f"http://localhost:5173/candidate/login?session={candidate.session_id}&email={candidate.email}"
+
+        # Determine what changed
+        if not request.interview_window_start and not request.interview_window_end:
+            # Time window removed
+            change_message = "<p><strong>Update:</strong> The interview time window restriction has been removed. You can now access the interview anytime before your session expires.</p>"
+        elif not old_start and not old_end:
+            # Time window added
+            start_str = candidate.interview_window_start.strftime("%B %d, %Y at %I:%M %p %Z")
+            end_str = candidate.interview_window_end.strftime("%B %d, %Y at %I:%M %p %Z")
+            change_message = f"""
+                <p><strong>Update:</strong> An interview time window has been set for you.</p>
+                <p>You can access the interview between:</p>
+                <ul>
+                    <li><strong>Start:</strong> {start_str}</li>
+                    <li><strong>End:</strong> {end_str}</li>
+                </ul>
+            """
+        else:
+            # Time window modified
+            start_str = candidate.interview_window_start.strftime("%B %d, %Y at %I:%M %p %Z") if candidate.interview_window_start else "Not set"
+            end_str = candidate.interview_window_end.strftime("%B %d, %Y at %I:%M %p %Z") if candidate.interview_window_end else "Not set"
+            change_message = f"""
+                <p><strong>Update:</strong> Your interview time window has been updated.</p>
+                <p>New time window:</p>
+                <ul>
+                    <li><strong>Start:</strong> {start_str}</li>
+                    <li><strong>End:</strong> {end_str}</li>
+                </ul>
+            """
+
+        subject = f"Interview Time Window Updated - {candidate.name}"
+        body = f"""
+        <html>
+            <body>
+                <h2>Hello {candidate.name},</h2>
+                {change_message}
+                <p>Please click the link below to access your interview:</p>
+                <p><a href="{login_link}">{login_link}</a></p>
+                <p><strong>Session ID:</strong> {candidate.session_id}</p>
+                <br>
+                <p>If you have any questions, please contact the recruiting team.</p>
+                <p>Best regards,<br>Recruiting Team</p>
+            </body>
+        </html>
+        """
+
+        await email_service.send_email(candidate.email, subject, body)
+        logger.info(f"Time window update notification sent to candidate {candidate_id}")
+
+    logger.info(f"Time window updated for candidate {candidate_id}")
+
+    return CandidateSessionInfo(
+        candidate_id=candidate.candidate_id,
+        name=candidate.name,
+        email=candidate.email,
+        session_id=candidate.session_id or "",
+        session_expires_at=candidate.session_expires_at or datetime.now(timezone.utc),
+        interview_window_start=candidate.interview_window_start,
+        interview_window_end=candidate.interview_window_end,
     )

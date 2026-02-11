@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from .interview_state import InterviewState
 from .enums import InterviewPhase, RouterDecision, CheatingLevel
@@ -19,7 +19,7 @@ def create_initial_state(
     Factory function to create a properly initialized interview state.
     """
     config = config or {}
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Initialize focus areas with tracking fields
     initialized_focus_areas = [
@@ -141,7 +141,7 @@ def log_transition(
     Add a transition log entry to state for observability.
     """
     log_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "from_phase": from_phase,
         "to_phase": to_phase,
         "node_name": node_name,
@@ -151,7 +151,7 @@ def log_transition(
 
     # Create new state with updated log
     new_log = state.get("transition_log", []) + [log_entry]
-    return {**state, "transition_log": new_log, "updated_at": datetime.utcnow().isoformat()}
+    return {**state, "transition_log": new_log, "updated_at": datetime.now(timezone.utc).isoformat()}
 
 
 def get_current_pillar(state: InterviewState) -> Optional[Dict[str, Any]]:
@@ -163,26 +163,36 @@ def get_current_pillar(state: InterviewState) -> Optional[Dict[str, Any]]:
     return None
 
 
-def get_conversation_context(state: InterviewState, max_messages: int = 10) -> List[Dict[str, str]]:
+
+def get_message_history_for_pillar(state: InterviewState, pillar_index: int) -> List:
     """
-    Extract recent conversation context for LLM prompts.
-    Returns list of {"role": "assistant"|"human", "content": str}
+    Extract message history specific to a pillar for focused context.
+
+    Args:
+        state: Current interview state
+        pillar_index: Index of the pillar to get messages for
+
+    Returns:
+        List of LangChain BaseMessage objects (AIMessage, HumanMessage)
     """
+    from langchain_core.messages import AIMessage, HumanMessage
+
     question_records = state.get("question_records", [])
-    context = []
+    pillar_messages = []
 
-    for record in question_records[-max_messages:]:
-        context.append({
-            "role": "assistant",
-            "content": record.get("question_text", ""),
-        })
-        if record.get("answer_text"):
-            context.append({
-                "role": "human",
-                "content": record.get("answer_text", ""),
-            })
+    for record in question_records:
+        if record.get("pillar_index") == pillar_index:
+            # Add question as AIMessage
+            q_text = record.get("question_text")
+            if q_text:
+                pillar_messages.append(AIMessage(content=q_text))
 
-    return context
+            # Add answer as HumanMessage
+            a_text = record.get("answer_text")
+            if a_text:
+                pillar_messages.append(HumanMessage(content=a_text))
+
+    return pillar_messages
 
 
 def update_pillar_score(state: InterviewState, pillar_index: int, score: float) -> InterviewState:

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import UUID
@@ -88,7 +88,7 @@ class RecruiterConnection:
     """A single recruiter WebSocket connection."""
     websocket: WebSocket
     recruiter_id: str
-    connected_at: datetime = field(default_factory=datetime.utcnow)
+    connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_event_id: Optional[str] = None
     is_active: bool = True
 
@@ -211,7 +211,7 @@ class InterviewBroadcaster:
             event_id=str(uuid.uuid4()),
             event_type=event_type,
             interview_id=interview_id,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             data=data,
         )
 

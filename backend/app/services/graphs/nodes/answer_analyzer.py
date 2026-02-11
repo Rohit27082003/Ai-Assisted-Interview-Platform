@@ -14,7 +14,7 @@ The decision_router uses these signals to make routing decisions.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.core.llm import get_llm
@@ -97,7 +97,7 @@ async def answer_analyzer_node(state: InterviewState) -> Dict[str, Any]:
             "question_records": updated_records,
             "last_analysis_signals": signals,
             "phase": InterviewPhase.QUESTIONING.value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     current_pillar = get_current_pillar(state)
@@ -154,7 +154,7 @@ async def answer_analyzer_node(state: InterviewState) -> Dict[str, Any]:
             "focus_areas": state_with_score.get("focus_areas", []),
             "current_question_depth": new_depth,
             "phase": InterviewPhase.QUESTIONING.value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             **cheating_updates,
         }
 
@@ -179,7 +179,7 @@ async def answer_analyzer_node(state: InterviewState) -> Dict[str, Any]:
             "error_count": state.get("error_count", 0) + 1,
             "last_error": str(e),
             "phase": InterviewPhase.QUESTIONING.value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
 
@@ -265,7 +265,7 @@ def _process_cheating_signals(
         # Add new flag
         new_flag = {
             "question_id": question_record.get("question_id"),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "reason": cheating_output.reasoning,
             "severity": cheating_output.suspicion_score,
             "question_repetition": cheating_output.question_repetition_detected,

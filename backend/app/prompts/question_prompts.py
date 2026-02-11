@@ -1,11 +1,11 @@
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # ═══════════════════════════════════════════════════════════════════════════
 # QUESTION GENERATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-QUESTION_GENERATION_PROMPT = ChatPromptTemplate.from_template(
-    """You are an expert technical interviewer conducting a structured interview.
+QUESTION_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are an expert technical interviewer conducting a structured interview.
 
 ROLE CONTEXT:
 - Job Role: {job_role}
@@ -16,31 +16,28 @@ ROLE CONTEXT:
 CANDIDATE CONTEXT:
 {resume_context}
 
-CONVERSATION SO FAR:
-{conversation_context}
-
-TOPICS ALREADY COVERED (avoid repetition):
-{previous_topics_covered}
-
-CONCEPTS TO AVOID:
-{avoid_concepts}
-
-INSTRUCTIONS:
-Generate ONE interview question that:
-1. Directly probes the candidate's knowledge of "{pillar_name}"
-2. Matches difficulty level {depth_level}/5
-3. Is concise and readable in 12-15 seconds (max 30-40 words)
-4. Can be answered in 45 seconds of speaking
-5. Has a clear, assessable answer (not open-ended philosophy)
-6. Builds on or differs from previous questions in this topic
-7. Uses simple, direct language without complex nested clauses
-
 DIFFICULTY LEVEL GUIDE:
 - Level 1 (Foundational): Core concepts, definitions, basic understanding
 - Level 2 (Practical): Application of concepts, common use cases
 - Level 3 (Scenario): Real-world problem solving, trade-off analysis
 - Level 4 (Edge Case): Unusual situations, failure modes, optimizations
 - Level 5 (Expert): Deep internals, advanced patterns, architecture decisions
+
+CRITICAL INSTRUCTION FOR AVOIDING REPETITION:
+Review the conversation history below CAREFULLY. You MUST NOT ask questions that:
+- Cover the same concept already discussed
+- Use similar wording to previous questions
+- Test knowledge already demonstrated by the candidate
+- Repeat topics even if phrased differently
+
+Instead, you must:
+- Build on previous answers to go deeper
+- Explore different aspects of {pillar_name}
+- Ask about related but distinct concepts
+- Progress naturally through the topic
+
+ALREADY COVERED IN THIS PILLAR (DO NOT REPEAT):
+{previous_topics_covered}
 
 OUTPUT FORMAT (JSON only, no markdown):
 {{
@@ -51,37 +48,47 @@ OUTPUT FORMAT (JSON only, no markdown):
     "expected_coverage": ["Key point 1", "Key point 2", "Key point 3"],
     "time_estimate_seconds": 45,
     "probing_intent": "What this question reveals about the candidate"
-}}"""
-)
+}}
+
+INSTRUCTIONS:
+Generate ONE interview question that:
+1. Directly probes NEW knowledge of "{pillar_name}" not yet covered
+2. Matches difficulty level {depth_level}/5
+3. Is concise and readable in 12-15 seconds (max 30-40 words)
+4. Can be answered in 45 seconds of speaking
+5. Has a clear, assessable answer (not open-ended philosophy)
+6. Differs completely from ALL previous questions shown in history
+7. Uses simple, direct language without complex nested clauses"""),
+    MessagesPlaceholder(variable_name="conversation_history", optional=True),
+    ("human", "Based on the conversation history above, generate the next unique question for the topic '{pillar_name}' at difficulty level {depth_level}/5.")
+])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FOLLOW-UP QUESTION GENERATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-FOLLOW_UP_QUESTION_PROMPT = ChatPromptTemplate.from_template(
-    """You are conducting a technical interview follow-up.
-
-ORIGINAL QUESTION:
-{original_question}
-
-CANDIDATE'S ANSWER:
-{candidate_answer}
+FOLLOW_UP_QUESTION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are conducting a technical interview follow-up.
 
 TOPIC AREA: {pillar_name}
 REASON FOR FOLLOW-UP: {follow_up_reason}
 IDENTIFIED GAPS: {gaps_identified}
 AREA TO PROBE: {probe_area}
 
-INSTRUCTIONS:
-Generate a targeted follow-up question that:
-1. Does NOT change the topic - stays within "{pillar_name}"
-2. Probes deeper into "{probe_area}"
-3. References something specific from their answer
-4. Is concise and readable in 10-15 seconds (max 25-30 words)
-5. Can be answered in 30-45 seconds
-6. Clarifies understanding or tests depth
-7. Uses simple, direct language
+CRITICAL INSTRUCTION:
+Review the full conversation history below. The most recent exchange contains:
+- The question you just asked
+- The candidate's answer
+
+Your follow-up must:
+1. Stay within "{pillar_name}" topic
+2. Probe deeper into "{probe_area}"
+3. Reference something SPECIFIC from their latest answer
+4. NOT repeat any previously asked question or angle
+5. Be concise (10-15 seconds to read, max 25-30 words)
+6. Be answerable in 30-45 seconds
+7. Use simple, direct language
 
 OUTPUT FORMAT (JSON only, no markdown):
 {{
@@ -89,8 +96,10 @@ OUTPUT FORMAT (JSON only, no markdown):
     "builds_on": "What part of their answer this builds on",
     "gap_addressed": "What gap or unclear point this addresses",
     "expected_elaboration": ["Point they should elaborate on 1", "Point 2"]
-}}"""
-)
+}}"""),
+    MessagesPlaceholder(variable_name="conversation_history", optional=True),
+    ("human", "Based on the conversation above, generate a targeted follow-up question that probes deeper into '{probe_area}' within the topic of '{pillar_name}'.")
+])
 
 
 # ═══════════════════════════════════════════════════════════════════════════

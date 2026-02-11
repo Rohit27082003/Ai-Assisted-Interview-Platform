@@ -29,21 +29,28 @@ export function useAudioRecorder({
         }
       });
 
-      // CRITICAL: Use ogg-opus format (AWS Transcribe compatible)
-      // AWS only accepts: ogg-opus, pcm, flac, g711-ulaw, g711-alaw, g729
-      // Browser default webm-opus is NOT supported by AWS!
-      const mimeType = 'audio/ogg; codecs=opus';
+      // Choose best audio format for AWS Transcribe compatibility
+      // Priority: ogg-opus (ideal for AWS) → webm-opus (Chrome fallback) → any available
+      const formatCandidates = [
+        'audio/ogg; codecs=opus',    // Firefox — directly compatible with AWS Transcribe
+        'audio/webm; codecs=opus',   // Chrome, Edge — most common browser format
+        'audio/webm',                // Fallback
+      ];
 
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        console.warn('ogg-opus not supported, browser may not be compatible');
+      const mimeType = formatCandidates.find(fmt => MediaRecorder.isTypeSupported(fmt));
+
+      if (!mimeType) {
+        console.warn('No supported audio format found');
         setError('Browser does not support required audio format. Please use Chrome, Firefox, or Edge.');
         stream.getTracks().forEach(t => t.stop());
         return;
       }
 
+      console.log(`Using audio format: ${mimeType}`);
+
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: mimeType,
-        audioBitsPerSecond: 48000,
+        mimeType,
+        audioBitsPerSecond: 128000,
       });
 
       mediaRecorderRef.current = mediaRecorder;
@@ -58,7 +65,7 @@ export function useAudioRecorder({
 
       mediaRecorder.start(chunkInterval);
       setRecording(true);
-      console.log('✅ Recording started with ogg-opus format');
+      console.log(`✅ Recording started with format: ${mimeType}`);
     } catch (err) {
       setError('Microphone access denied or unavailable');
       console.error('Audio recording error:', err);

@@ -20,7 +20,6 @@ class RouterDecision(str, Enum):
     END_VIOLATION = "end_violation"           # Hard violation detected
     END_TIMEOUT = "end_timeout"               # Interview timeout
     END_RECRUITER = "end_recruiter"           # Recruiter terminated
-    AWAIT_INPUT = "await_input"               # Waiting for candidate input
 
 
 class CheatingLevel(str, Enum):

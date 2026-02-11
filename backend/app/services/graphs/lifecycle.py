@@ -15,7 +15,7 @@ from app.models.models import (
     Evaluation, Report, Recommendation
 )
 from app.schemas.state import create_initial_state
-from app.services.realtime.session_manager import active_sessions, pending_cleanups
+from app.services.realtime.session_manager import active_sessions, pending_cleanups, remove_session
 from app.services.realtime.interview_broadcaster import (
     get_broadcaster,
     InterviewEventType

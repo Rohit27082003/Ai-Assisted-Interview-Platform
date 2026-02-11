@@ -23,7 +23,7 @@ from .utils import (
     create_initial_state,
     log_transition,
     get_current_pillar,
-    get_conversation_context,
+    get_message_history_for_pillar,
     update_pillar_score,
 )
 
@@ -46,6 +46,6 @@ __all__ = [
     "create_initial_state",
     "log_transition",
     "get_current_pillar",
-    "get_conversation_context",
+    "get_message_history_for_pillar",
     "update_pillar_score",
 ]

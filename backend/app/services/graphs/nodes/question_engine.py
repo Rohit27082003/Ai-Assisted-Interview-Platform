@@ -14,7 +14,7 @@ Uses structured output (Pydantic schemas) - no manual parsing.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -26,7 +26,6 @@ from app.schemas.state import (
     RouterDecision,
     log_transition,
     get_current_pillar,
-    get_conversation_context,
 )
 from app.schemas.outputs.question_outputs import (
     QuestionGenerationOutput,
@@ -86,7 +85,7 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
             "question_text": question_output.question if hasattr(question_output, 'question') else question_output.follow_up_question,
             "question_depth": state.get("current_question_depth", 1),
             "is_follow_up": is_follow_up,
-            "question_sent_at": datetime.utcnow().isoformat(),
+            "question_sent_at": datetime.now(timezone.utc).isoformat(),
             "answer_text": None,
             "answer_audio_url": None,
             "answer_received_at": None,
@@ -141,17 +140,16 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
             "total_follow_ups": total_follow_ups,
             "focus_areas": updated_focus_areas,
             "phase": InterviewPhase.AWAITING_ANSWER.value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
         # Set timing for answer window
         timing = state.get("timing", {}).copy()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         timing["question_displayed_at"] = now.isoformat()
         reading_buffer = timing.get("reading_buffer_seconds", 20)
         answer_window = timing.get("answer_window_seconds", 45)
 
-        from datetime import timedelta
         timing["reading_deadline"] = (now + timedelta(seconds=reading_buffer)).isoformat()
         timing["answer_deadline"] = (now + timedelta(seconds=reading_buffer + answer_window)).isoformat()
 
@@ -170,7 +168,6 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
         error_count = state.get("error_count", 0) + 1
         
         # Emergency Fallback - ALWAYS return a question to prevent stuck state
-        safe_year = datetime.now().year
         fallback_question = (
             f"Could you tell me more about your recent projects and the technologies you used? "
             f"I'm interested in your experience."
@@ -185,7 +182,7 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
             "question_text": fallback_question,
             "question_depth": 1,
             "is_follow_up": False,
-            "question_sent_at": datetime.utcnow().isoformat(),
+            "question_sent_at": datetime.now(timezone.utc).isoformat(),
             "answer_text": None,
             "answer_audio_url": None,
             "answer_received_at": None,
@@ -196,7 +193,7 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
         message_history = [AIMessage(content=fallback_question)]
         
         timing = state.get("timing", {}).copy()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         timing["question_displayed_at"] = now.isoformat()
         timing["reading_deadline"] = (now + timedelta(seconds=20)).isoformat()
         timing["answer_deadline"] = (now + timedelta(seconds=65)).isoformat()
@@ -218,7 +215,7 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
 
 
 async def _generate_new_question(state: InterviewState) -> QuestionGenerationOutput:
-    """Generate a new question using structured output."""
+    """Generate a new question using structured output with full conversation history."""
     current_pillar = get_current_pillar(state)
     pillar_name = current_pillar.get("skill", "General") if current_pillar else "General"
     pillar_reason = current_pillar.get("reason", "") if current_pillar else ""
@@ -227,22 +224,24 @@ async def _generate_new_question(state: InterviewState) -> QuestionGenerationOut
     job_role = state.get("job_role", "Software Engineer")
     resume_context = state.get("resume_context", "")[:1000]  # Truncate for context window
 
-    # Get conversation context
-    conversation = get_conversation_context(state, max_messages=6)
-    conversation_str = "\n".join([
-        f"{'Assistant' if c['role'] == 'assistant' else 'Candidate'}: {c['content'][:200]}"
-        for c in conversation
-    ]) if conversation else "No previous conversation."
+    # Get message history (LangChain messages) - this is the key fix
+    message_history = state.get("message_history", [])
 
-    # Get topics already covered in this pillar
+    # Filter to only messages from current pillar for focused context
     question_records = state.get("question_records", [])
     current_pillar_idx = state.get("current_pillar_index", 0)
-    covered_topics = [
-        r.get("question_text", "")[:100]
-        for r in question_records
-        if r.get("pillar_index") == current_pillar_idx
-    ]
-    previous_topics = "\n".join(covered_topics) if covered_topics else "None yet."
+
+    # Get detailed list of questions already asked in this pillar
+    covered_topics = []
+    for r in question_records:
+        if r.get("pillar_index") == current_pillar_idx:
+            q_text = r.get("question_text", "")
+            answer_text = r.get("answer_text", "")
+            covered_topics.append(
+                f"Q: {q_text}\nA: {answer_text[:150] if answer_text else '(no answer)'}"
+            )
+
+    previous_topics = "\n\n".join(covered_topics) if covered_topics else "None yet - this is the first question in this pillar."
 
     # Build prompt inputs
     prompt_inputs = {
@@ -251,9 +250,8 @@ async def _generate_new_question(state: InterviewState) -> QuestionGenerationOut
         "depth_level": depth_level,
         "job_role": job_role,
         "resume_context": f"Resume highlights:\n{resume_context}" if resume_context else "No resume context available.",
-        "conversation_context": conversation_str,
         "previous_topics_covered": previous_topics,
-        "avoid_concepts": "",
+        "conversation_history": message_history[-12:] if message_history else [],  # Last 12 messages (6 Q&A pairs)
     }
 
     # Get LLM with structured output
@@ -302,7 +300,7 @@ async def _generate_new_question(state: InterviewState) -> QuestionGenerationOut
 
 
 async def _generate_follow_up(state: InterviewState) -> FollowUpQuestionOutput:
-    """Generate a follow-up question using structured output."""
+    """Generate a follow-up question using structured output with full conversation history."""
     current_pillar = get_current_pillar(state)
     pillar_name = current_pillar.get("skill", "General") if current_pillar else "General"
 
@@ -318,9 +316,8 @@ async def _generate_follow_up(state: InterviewState) -> FollowUpQuestionOutput:
             expected_elaboration=[],
         )
 
-    last_record = question_records[-1]
-    original_question = last_record.get("question_text", "")
-    candidate_answer = last_record.get("answer_text", "")
+    # Get message history for full context
+    message_history = state.get("message_history", [])
 
     # Get analysis signals for probe areas
     signals = state.get("last_analysis_signals", {})
@@ -333,12 +330,11 @@ async def _generate_follow_up(state: InterviewState) -> FollowUpQuestionOutput:
 
     # Build prompt inputs
     prompt_inputs = {
-        "original_question": original_question,
-        "candidate_answer": candidate_answer or "No answer provided",
         "probe_area": probe_area,
         "pillar_name": pillar_name,
-        "follow_up_reason": signals.get("analysis_summary", ""),
+        "follow_up_reason": signals.get("analysis_summary", "Exploring deeper understanding"),
         "gaps_identified": ", ".join(missing_concepts) if missing_concepts else "None identified",
+        "conversation_history": message_history[-8:] if message_history else [],  # Last 8 messages (4 Q&A pairs)
     }
 
     # Get LLM with structured output
@@ -377,23 +373,3 @@ async def _generate_follow_up(state: InterviewState) -> FollowUpQuestionOutput:
                 gap_addressed="Examples",
                 expected_elaboration=["Examples"]
             )
-
-
-def adjust_difficulty(state: InterviewState, adjustment: int) -> Dict[str, Any]:
-    """
-    Adjust question difficulty based on performance.
-
-    Args:
-        state: Current interview state
-        adjustment: -1 (decrease), 0 (maintain), +1 (increase)
-
-    Returns:
-        State update with new difficulty
-    """
-    current_depth = state.get("current_question_depth", 1)
-    new_depth = max(1, min(5, current_depth + adjustment))
-
-    if new_depth != current_depth:
-        logger.info(f"Adjusting difficulty: {current_depth} -> {new_depth}")
-
-    return {"current_question_depth": new_depth}

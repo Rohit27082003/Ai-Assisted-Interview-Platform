@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Upload, Filter, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye, BarChart2
+  Plus, Upload, Filter, Target, FileCheck, Users, Key, RefreshCw, Sliders, Copy, FileText, Trash2, ChevronDown, ChevronRight, Eye, BarChart2, Clock
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { candidateApi, jdApi, interviewApi } from '../services/api';
 import type { JobDescription, Candidate, ShortlistResponse, FocusArea } from '../types';
 import ActionMenu from '../components/common/ActionMenu';
 import type { ActionMenuEntry } from '../components/common/ActionMenu';
+import TimeWindowModal from '../components/TimeWindowModal';
 
 interface CandidateSession {
   candidate_id: string;
@@ -36,6 +37,9 @@ export default function CandidatesPage() {
   const [showSessions, setShowSessions] = useState(false);
   const [sessions, setSessions] = useState<CandidateSession[]>([]);
   const [expandedCandidates, setExpandedCandidates] = useState<Set<string>>(new Set());
+
+  // Time window modal state
+  const [timeWindowModalCandidate, setTimeWindowModalCandidate] = useState<Candidate | null>(null);
 
   const toggleExpandCandidate = (candidateId: string) => {
     setExpandedCandidates(prev => {
@@ -84,26 +88,25 @@ export default function CandidatesPage() {
 
   const handleCreateCandidate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !email || !selectedJDId) return;
+    if (!name || !email || !selectedJDId || !resumeFile) {
+      if (!resumeFile) toast.error('Resume is required');
+      return;
+    }
 
     setSubmitting(true);
     try {
       const candidate = await candidateApi.create(name, email, selectedJDId);
 
-      if (resumeFile) {
-        await candidateApi.uploadResume(candidate.candidate_id, resumeFile);
-        toast.success('Candidate created. Starting AI analysis...');
+      await candidateApi.uploadResume(candidate.candidate_id, resumeFile);
+      toast.success('Candidate created. Starting AI analysis...');
 
-        // Auto-run shortlisting for immediate feedback
-        try {
-          const result = await candidateApi.shortlist(selectedJDId, threshold);
-          setShortlistResult(result);
-          toast.success(`Analysis complete: ${result.shortlisted.length} shortlisted`);
-        } catch {
-          toast.error('Auto-analysis failed, please run Shortlisting manually');
-        }
-      } else {
-        toast.success('Candidate created');
+      // Auto-run shortlisting for immediate feedback
+      try {
+        const result = await candidateApi.shortlist(selectedJDId, threshold);
+        setShortlistResult(result);
+        toast.success(`Analysis complete: ${result.shortlisted.length} shortlisted`);
+      } catch {
+        toast.error('Auto-analysis failed, please run Shortlisting manually');
       }
 
       setName('');
@@ -423,9 +426,11 @@ export default function CandidatesPage() {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Resume</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Resume <span className="text-red-500">*</span>
+            </label>
             <div className="flex items-center gap-4">
-              <label className="btn-secondary cursor-pointer flex items-center gap-2">
+              <label className={`btn-secondary cursor-pointer flex items-center gap-2 ${!resumeFile ? 'border-red-300' : ''}`}>
                 <Upload className="w-4 h-4" />
                 {resumeFile ? resumeFile.name : 'Choose File'}
                 <input
@@ -433,8 +438,12 @@ export default function CandidatesPage() {
                   className="hidden"
                   accept=".pdf,.docx,.doc,.txt"
                   onChange={(e) => setResumeFile(e.target.files?.[0] || null)}
+                  required
                 />
               </label>
+              {!resumeFile && (
+                <span className="text-xs text-red-500">Required</span>
+              )}
             </div>
           </div>
           <div className="flex gap-3">
@@ -599,6 +608,15 @@ export default function CandidatesPage() {
                               });
                             }
 
+                            // Time window management for candidates with sessions
+                            if (['focus_ready', 'interviewing', 'interviewed', 'evaluated'].includes(c.status)) {
+                              items.push({
+                                label: 'Manage Time Window',
+                                icon: Clock,
+                                onClick: () => setTimeWindowModalCandidate(c),
+                              });
+                            }
+
                             // Separator before destructive action
                             items.push({ type: 'divider' });
                             items.push({
@@ -702,6 +720,18 @@ export default function CandidatesPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Time Window Modal */}
+      {timeWindowModalCandidate && (
+        <TimeWindowModal
+          candidate={timeWindowModalCandidate}
+          onClose={() => setTimeWindowModalCandidate(null)}
+          onSuccess={() => {
+            loadCandidates(selectedJDId);
+            setTimeWindowModalCandidate(null);
+          }}
+        />
       )}
     </div >
   );

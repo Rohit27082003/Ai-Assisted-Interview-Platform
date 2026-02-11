@@ -1,6 +1,8 @@
 """Candidate Portal routes for session-based login and interview access."""
 
 import asyncio
+import json
+import base64
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,18 +28,18 @@ from app.services.realtime.interview_broadcaster import (
 from app.core.logging import get_logger
 
 # Shared Services
-from app.services.realtime.session_manager import active_sessions, pending_cleanups
+from app.services.realtime.session_manager import (
+    active_sessions,
+    register_session,
+    get_session,
+    remove_session,
+    schedule_cleanup,
+)
 from app.services.graphs.lifecycle import (
     ensure_active_session,
     delayed_disconnect_cleanup
 )
-from app.services.graphs.execution import (
-    run_graph_cycle,
-    handle_answer_started,
-    handle_answer_complete,
-    handle_violation,
-    handle_request_finish,
-)
+from app.services.graphs.execution import run_interview_event_loop
 from app.services.graphs.interview_graph import build_interview_graph
 from app.services.graphs.postgres_checkpoint import get_postgres_checkpointer
 
@@ -112,6 +114,37 @@ async def get_portal_info(
         )
     
     # Generate instructions based on status
+    now = datetime.now(timezone.utc)
+    time_window_message = ""
+
+    # Check time window restrictions (candidate-level takes precedence over JD-level)
+    window_start = db_candidate.interview_window_start if db_candidate.interview_window_start else (jd.interview_window_start if jd else None)
+    window_end = db_candidate.interview_window_end if db_candidate.interview_window_end else (jd.interview_window_end if jd else None)
+
+    if window_start and window_end:
+        start_str = window_start.strftime("%B %d, %Y at %I:%M %p %Z")
+        end_str = window_end.strftime("%B %d, %Y at %I:%M %p %Z")
+
+        if now < window_start:
+            time_window_message = (
+                f"\n\n⏰ Interview Time Window:\n"
+                f"The interview will be accessible starting {start_str}.\n"
+                f"Please return at that time to begin your interview."
+            )
+            can_start = False
+        elif now > window_end:
+            time_window_message = (
+                f"\n\n⏰ Interview Time Window Expired:\n"
+                f"The interview window closed at {end_str}.\n"
+                f"Please contact the recruiter if you need assistance."
+            )
+            can_start = False
+        else:
+            time_window_message = (
+                f"\n\n⏰ Interview Time Window:\n"
+                f"You can complete this interview until {end_str}."
+            )
+
     if interview and interview.status == InterviewStatus.COMPLETED:
         instructions = (
             "Your interview has been completed. Thank you for participating! "
@@ -120,7 +153,7 @@ async def get_portal_info(
     elif interview and interview.status == InterviewStatus.IN_PROGRESS:
         instructions = (
             "Your interview is in progress. Please continue where you left off."
-        )
+        ) + time_window_message
     elif can_start:
         instructions = (
             "Welcome to your AI-powered interview! When you're ready:\n"
@@ -128,12 +161,12 @@ async def get_portal_info(
             "2. Check your microphone is working\n"
             "3. Click 'Start Interview' to begin\n\n"
             "You'll be asked a series of questions. Speak clearly and take your time."
-        )
+        ) + time_window_message
     else:
         instructions = (
             "Your interview session is not yet ready. "
             "Please contact the recruiter for more information."
-        )
+        ) + time_window_message
     
     return PortalInfoResponse(
         candidate_id=candidate.candidate_id,
@@ -147,7 +180,7 @@ async def get_portal_info(
     )
 
 
-from app.api.routes.interview_routes import ensure_active_session
+# ensure_active_session is imported from lifecycle.py at line 31
 
 @router.post("/start-interview", response_model=StartInterviewResponse)
 async def start_candidate_interview(
@@ -166,11 +199,30 @@ async def start_candidate_interview(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Candidate not found",
         )
-    
-    # Get JD for initialization
+
+    # Get JD for time window validation
     jd = await db.get(JobDescription, db_candidate.jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
+
+    # Validate interview time window (candidate-level takes precedence over JD-level)
+    now = datetime.now(timezone.utc)
+    window_start = db_candidate.interview_window_start if db_candidate.interview_window_start else jd.interview_window_start
+    window_end = db_candidate.interview_window_end if db_candidate.interview_window_end else jd.interview_window_end
+
+    if window_start and window_end:
+        if now < window_start:
+            start_str = window_start.strftime("%B %d, %Y at %I:%M %p %Z")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Interview access window has not started yet. Please come back after {start_str}.",
+            )
+        if now > window_end:
+            end_str = window_end.strftime("%B %d, %Y at %I:%M %p %Z")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Interview access window has ended. The window closed at {end_str}.",
+            )
 
     # Check if candidate can start interview
     if db_candidate.status not in (CandidateStatus.SHORTLISTED, CandidateStatus.FOCUS_READY):
@@ -309,21 +361,8 @@ async def candidate_interview_websocket(
     transcribe_service = get_transcribe_service()
     broadcaster = get_broadcaster()
     
-    # Cancel any pending cleanup (reconnection)
-    if interview_id in pending_cleanups:
-        logger.info(f"Cancelling pending cleanup for {interview_id} - reconnected")
-        pending_cleanups[interview_id].cancel()
-        pending_cleanups.pop(interview_id, None)
-
-    # Register active session
-    active_sessions[interview_id] = {
-        "websocket": websocket,
-        "connected_at": datetime.now(timezone.utc),
-        "stream_id": f"stream-{interview_id}",
-        "answer_buffer": "",
-        "terminated": False,
-        "user_email": email # Metadata
-    }
+    # Register active session (also cancels any pending cleanup)
+    register_session(interview_id, websocket, {"user_email": email})
 
     try:
         # 3. Initialize Graph & State
@@ -357,12 +396,31 @@ async def candidate_interview_websocket(
                 await websocket.close(code=4003, reason="Interview already completed")
                 return
 
-            # Ensure graph state is consistent
+            # CRITICAL: Sync graph state from DB on reconnect to prevent question repetition
             current_state_snap = await graph.aget_state(config)
-            if not current_state_snap or not current_state_snap.values:
-                if interview.state_json:
-                    await graph.aupdate_state(config, interview.state_json)
-                    logger.info(f"Seeded graph state from DB for {interview_id}")
+
+            if interview.state_json:
+                db_state = interview.state_json
+                checkpoint_state = current_state_snap.values if current_state_snap else None
+
+                should_resync = False
+                if not checkpoint_state:
+                    should_resync = True
+                    logger.info(f"No checkpoint state found for {interview_id}, seeding from DB")
+                else:
+                    db_question_count = len(db_state.get("question_records", []))
+                    checkpoint_question_count = len(checkpoint_state.get("question_records", []))
+                    if db_question_count > checkpoint_question_count:
+                        should_resync = True
+                        logger.warning(
+                            f"DB has more questions ({db_question_count}) than checkpoint ({checkpoint_question_count}). "
+                            f"Resyncing to prevent repetition."
+                        )
+
+                if should_resync:
+                    await graph.aupdate_state(config, db_state)
+                    logger.info(f"Synced graph state from DB for {interview_id}")
+                    current_state_snap = await graph.aget_state(config)
 
             # Update status if needed
             if interview.status == InterviewStatus.PENDING:
@@ -373,7 +431,7 @@ async def candidate_interview_websocket(
             # Restore State to Client
             if current_state_snap and current_state_snap.values:
                 state = current_state_snap.values
-                
+
                 # Build Transcript
                 transcript = []
                 for record in state.get("question_records", []):
@@ -382,13 +440,27 @@ async def candidate_interview_websocket(
                             "q": record.get("question_text", ""),
                             "a": record.get("answer_text") or "(Audio Answer)"
                         })
-                
+
+                # Calculate time_left from server-side deadlines
+                current_phase = state.get("phase", "idle")
+                time_left = 0
+                timing = state.get("timing", {})
+                now = datetime.now(timezone.utc)
+
+                if current_phase == "reading" and "reading_deadline" in timing:
+                    deadline = datetime.fromisoformat(timing["reading_deadline"])
+                    time_left = max(0, int((deadline - now).total_seconds()))
+                elif current_phase == "answering" and "answer_deadline" in timing:
+                    deadline = datetime.fromisoformat(timing["answer_deadline"])
+                    time_left = max(0, int((deadline - now).total_seconds()))
+
                 # Current Question
                 restore_data = {
                     "transcript": transcript,
-                    "phase": state.get("phase", "idle"),
+                    "phase": current_phase,
+                    "time_left": time_left,
                 }
-                
+
                 if state.get("current_question"):
                     # Reconstruct question info
                     current_idx = state.get("current_pillar_index", 0)
@@ -405,6 +477,7 @@ async def candidate_interview_websocket(
                         "answer_time_seconds": settings.ANSWER_TIME_SECONDS,
                     }
 
+                logger.info(f"Sending restore_state to {interview_id}: {len(transcript)} items")
                 await websocket.send_json({
                     "type": "restore_state",
                     "data": restore_data
@@ -422,66 +495,10 @@ async def candidate_interview_websocket(
             ),
         )
 
-        # 4. Main Event Loop
-        while True:
-            # Check for termination flag in session
-            session = active_sessions.get(interview_id, {})
-            if session.get("terminated"):
-                await websocket.send_json({
-                    "type": "terminated",
-                    "data": {"message": "Interview terminated by recruiter"}
-                })
-                break
-
-            # Receive
-            raw_msg = await websocket.receive_text()
-            import json
-            msg = json.loads(raw_msg)
-            msg_type = msg.get("type", "")
-
-            # Dispatch to Execution Service
-            if msg_type == "start":
-                await run_graph_cycle(graph, config, websocket, interview_id, broadcaster)
-
-            elif msg_type == "audio_chunk":
-                chunk_data = msg.get("data", {})
-                import base64
-                audio_bytes = base64.b64decode(chunk_data.get("chunk", ""))
-                stream_id = active_sessions[interview_id]["stream_id"]
-                
-                # Start stream if needed
-                if not transcribe_service.is_active(stream_id):
-                    async def on_partial(text):
-                        if interview_id in active_sessions:
-                            await websocket.send_json({
-                                "type": "transcript_partial",
-                                "data": {"text": text}
-                            })
-                    await transcribe_service.start_stream(interview_id, on_partial=on_partial)
-
-                await transcribe_service.feed_audio(stream_id, audio_bytes)
-
-            elif msg_type == "answer_started":
-                await handle_answer_started(graph, config, interview_id)
-
-            elif msg_type == "answer_complete":
-                await handle_answer_complete(
-                    graph, config, websocket, interview_id, 
-                    msg.get("data", {}), transcribe_service, broadcaster
-                )
-
-            elif msg_type == "violation":
-                 await handle_violation(
-                    graph, config, interview_id,
-                    msg.get("data", {}), broadcaster
-                )
-            
-            elif msg_type == "request_finish":
-                await handle_request_finish(websocket, interview_id, broadcaster)
-                break
-            
-            elif msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
+        # 4. Main Event Loop (shared with interview_routes)
+        await run_interview_event_loop(
+            graph, config, websocket, interview_id, transcribe_service, broadcaster
+        )
 
     except WebSocketDisconnect:
         logger.info(f"Candidate disconnected: {interview_id}")
@@ -489,6 +506,6 @@ async def candidate_interview_websocket(
         logger.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         # Cleanup
-        active_sessions.pop(interview_id, None)
+        remove_session(interview_id)
         task = asyncio.create_task(delayed_disconnect_cleanup(interview_id, broadcaster))
-        pending_cleanups[interview_id] = task
+        schedule_cleanup(interview_id, task)

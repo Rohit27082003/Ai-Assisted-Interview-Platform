@@ -156,7 +156,7 @@ async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphSt
 async def compile_report_node(state: ReportGraphState) -> ReportGraphState:
     """Compile the full comprehensive report with HITL database key."""
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     # Generate unique HITL (Human-In-The-Loop) database key for answer retrieval
     hitl_key = f"HITL-{state.get('candidate_id', '')[:8]}-{state.get('interview_id', '')[:8]}-{uuid.uuid4().hex[:8]}"
@@ -187,7 +187,7 @@ async def compile_report_node(state: ReportGraphState) -> ReportGraphState:
             "interview_duration_minutes": state.get("interview_duration_minutes", 0),
             "total_questions_asked": state.get("total_questions_asked", 0),
             "hitl_database_key": hitl_key,
-            "report_generated_at": datetime.utcnow().isoformat(),
+            "report_generated_at": datetime.now(timezone.utc).isoformat(),
         },
 
         # Focus Areas/Topics Covered

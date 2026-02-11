@@ -1,9 +1,8 @@
 import asyncio
-import base64
-import json
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from uuid import UUID
+import base64
 
 from fastapi import WebSocket
 from sqlalchemy import select
@@ -13,7 +12,9 @@ from app.core.database import async_session_factory
 from app.core.logging import get_logger
 from app.core.config import get_settings
 from app.models.models import Interview, Transcript, InterviewStatus
-from app.schemas.state import InterviewPhase, RouterDecision
+from app.schemas.state import InterviewPhase, RouterDecision, CheatingLevel
+from app.services.graphs.nodes.answer_analyzer import CHEATING_THRESHOLDS
+from app.utils.datetime_helpers import parse_iso_datetime
 from app.services.realtime.interview_broadcaster import (
     InterviewEventType,
     create_question_asked_event,
@@ -22,33 +23,14 @@ from app.services.realtime.interview_broadcaster import (
     create_pillar_completed_event,
     create_interview_completed_event,
 )
-from app.services.realtime.session_manager import active_sessions, pending_cleanups
+from app.services.realtime.session_manager import active_sessions, get_session
+from app.services.aws.s3_service import get_s3_service
 from app.services.graphs.lifecycle import run_post_interview_analysis
+from app.services.realtime.timer_service import get_or_create_timer, stop_timer
+from app.utils.serialization import serialize_state
 
 logger = get_logger(__name__)
 settings = get_settings()
-
-def serialize_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Helper to serialize LangGraph state for JSON storage."""
-    serialized = {}
-    for k, v in state.items():
-        if isinstance(v, list):
-            new_list = []
-            for item in v:
-                if hasattr(item, "model_dump"):
-                    new_list.append(item.model_dump())
-                elif hasattr(item, "dict"):
-                    new_list.append(item.dict())
-                else:
-                    new_list.append(item)
-            serialized[k] = new_list
-        elif hasattr(v, "model_dump"):
-            serialized[k] = v.model_dump()
-        elif hasattr(v, "dict"):
-            serialized[k] = v.dict()
-        else:
-            serialized[k] = v
-    return serialized
 
 async def run_graph_cycle(
     graph,
@@ -57,7 +39,12 @@ async def run_graph_cycle(
     interview_id: str,
     broadcaster,
 ):
-    """Run a graph execution cycle and handle events."""
+    """Run a graph execution cycle and handle events.
+
+    LangGraph's astream() naturally stops yielding when it hits an
+    interrupt_before node (audio_pipeline). No manual aget_state check
+    is needed — the async-for loop simply ends at the interrupt point.
+    """
     try:
         logger.info(f"Starting graph cycle for {interview_id}")
         async for event in graph.astream(None, config, stream_mode="updates"):
@@ -65,15 +52,12 @@ async def run_graph_cycle(
                 event, websocket, interview_id, broadcaster
             )
 
-            # Check if we hit an interrupt point
-            state_snap = await graph.aget_state(config)
-            if state_snap and state_snap.next:
-                # Only pause if we hit the explicit interrupt point (audio_pipeline)
-                if "audio_pipeline" in state_snap.next:
-                    logger.debug(f"Graph execution paused (interrupt) for {interview_id}. Next: {state_snap.next}")
-                    break
-                else:
-                    logger.debug(f"Graph continuing... Next: {state_snap.next}")
+        # Log where the graph paused after the stream ends
+        state_snap = await graph.aget_state(config)
+        if state_snap and state_snap.next:
+            logger.info(f"Graph paused at interrupt for {interview_id}. Next: {state_snap.next}")
+        else:
+            logger.info(f"Graph cycle fully completed for {interview_id}")
 
     except Exception as e:
         logger.error(f"Graph cycle error: {e}", exc_info=True)
@@ -90,8 +74,13 @@ async def handle_graph_event(
 ):
     """Process events emitted by the graph nodes."""
     for node_name, state_update in event.items():
+        # astream can yield interrupt metadata (tuples) — skip non-dict events
+        if not isinstance(state_update, dict):
+            logger.debug(f"Skipping non-dict event for {node_name}: {type(state_update).__name__}")
+            continue
+
         logger.info(f"GRAPH EVENT [{interview_id}]: Node={node_name}, Keys={list(state_update.keys())}")
-        
+
         if "error" in state_update:
             logger.error(f"Node {node_name} reported error: {state_update.get('last_error')}")
 
@@ -118,6 +107,10 @@ async def handle_graph_event(
                         "answer_time_seconds": settings.ANSWER_TIME_SECONDS,
                     }
                 })
+
+                # Start reading phase timer
+                timer = get_or_create_timer(interview_id, websocket)
+                await timer.start_reading_phase()
 
                 # Broadcast to recruiters
                 await broadcaster.broadcast(
@@ -242,7 +235,10 @@ async def handle_graph_event(
                             else InterviewStatus.TERMINATED
                         )
                         interview.ended_at = datetime.now(timezone.utc)
-                        interview.state_json = serialize_state(state_update)
+                        # Merge router update into the full persisted state
+                        full_state = dict(interview.state_json or {})
+                        full_state.update(serialize_state(state_update))
+                        interview.state_json = full_state
                         await db.commit()
 
                 # Broadcast completion
@@ -250,7 +246,7 @@ async def handle_graph_event(
                 started_at = timing.get("interview_started_at")
                 duration = 0
                 if started_at:
-                    start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                    start = parse_iso_datetime(started_at)
                     duration = (datetime.now(timezone.utc) - start).total_seconds() / 60
 
                 await broadcaster.broadcast(
@@ -278,19 +274,34 @@ async def handle_answer_complete(
     broadcaster,
 ):
     """Handle completed answer submission."""
-    session = active_sessions.get(interview_id, {})
-    stream_id = session.get("stream_id", f"stream-{interview_id}")
+    # Stop timer
+    await stop_timer(interview_id)
+
+    stream_id = f"stream-{interview_id}"
 
     # Get final transcription
     logger.info(f"Stopping transcription stream for {interview_id}")
     final_text = await transcribe_service.stop_stream(stream_id) or ""
     user_text = data.get("text", "")
     final_answer = user_text or final_text or "(No answer provided)"
-    
+
     logger.info(f"Answer received for {interview_id}: {len(final_answer)} chars")
 
-    # Get audio URL if we stored it
-    audio_url = data.get("audio_url")
+    # Upload audio to S3 if raw audio bytes were sent
+    audio_url = data.get("audio_url")  # Pre-uploaded URL from frontend
+    audio_base64 = data.get("audio_data")  # Raw audio bytes (base64)
+    if not audio_url and audio_base64:
+        try:
+            
+            audio_bytes = base64.b64decode(audio_base64)
+            state_snap = await graph.aget_state(config)
+            q_num = state_snap.values.get("total_questions_asked", 0) if state_snap and state_snap.values else 0
+            s3 = get_s3_service()
+            audio_url = await s3.upload_audio(audio_bytes, interview_id, q_num)
+            logger.info(f"Uploaded answer audio to S3: {audio_url}")
+        except Exception as e:
+            logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
+            # Continue without audio URL — don't block the interview
 
     # Update state with answer - CRITICAL: Include the injected keys
     await graph.aupdate_state(config, {
@@ -361,12 +372,12 @@ async def handle_violation(
         cheating_score = state.get("cheating_score", 0) + 3.0
         cheating_level = state.get("cheating_level", "none")
 
-        if cheating_score >= 8.0:
-            cheating_level = "penalty"
-        elif cheating_score >= 6.0:
-            cheating_level = "warning_2"
-        elif cheating_score >= 4.0:
-            cheating_level = "warning_1"
+        if cheating_score >= CHEATING_THRESHOLDS["penalty"]:
+            cheating_level = CheatingLevel.PENALTY.value
+        elif cheating_score >= CHEATING_THRESHOLDS["warning_2"]:
+            cheating_level = CheatingLevel.WARNING_2.value
+        elif cheating_score >= CHEATING_THRESHOLDS["warning_1"]:
+            cheating_level = CheatingLevel.WARNING_1.value
 
         await graph.aupdate_state(config, {
             "cheating_flags": cheating_flags,
@@ -386,14 +397,18 @@ async def handle_violation(
             },
         )
 
-async def handle_answer_started(graph, config: Dict[str, Any], interview_id: str):
-    """Handle when candidate starts answering (updates timing)."""
+async def handle_answer_started(graph, config: Dict[str, Any], interview_id: str, websocket=None):
+    """Handle when candidate starts answering (updates timing and starts answering timer)."""
     now = datetime.now(timezone.utc)
     state_snap = await graph.aget_state(config)
     if state_snap and state_snap.values:
         timing = state_snap.values.get("timing", {})
         timing["answer_started_at"] = now.isoformat()
         await graph.aupdate_state(config, {"timing": timing})
+
+    # Start answering phase timer
+    timer = get_or_create_timer(interview_id, websocket)
+    await timer.start_answering_phase()
 
 async def handle_request_finish(
     websocket: WebSocket,
@@ -402,19 +417,40 @@ async def handle_request_finish(
 ):
     """Handle candidate request to finish interview early."""
     logger.info(f"Candidate requested finish for {interview_id}")
-    
+
+    # Stop any running timer
+    await stop_timer(interview_id)
+
     # Update DB status
     async with async_session_factory() as db:
         interview = await db.get(Interview, UUID(interview_id))
         if interview:
             interview.status = InterviewStatus.COMPLETED
             interview.ended_at = datetime.now(timezone.utc)
+            # Mark reason in state
+            state = dict(interview.state_json or {})
+            state["phase"] = InterviewPhase.COMPLETED.value
+            state["router_decision"] = "user_completed"
+            interview.state_json = state
             await db.commit()
 
     # Trigger post-interview analysis
     asyncio.create_task(run_post_interview_analysis(interview_id))
-    
-    # Send completion message
+
+    # Broadcast completion to recruiters
+    await broadcaster.broadcast(
+        interview_id,
+        InterviewEventType.INTERVIEW_COMPLETED,
+        create_interview_completed_event(
+            completion_status="user_completed",
+            total_questions=0,
+            total_pillars=0,
+            duration_minutes=0,
+            final_score=None,
+        ),
+    )
+
+    # Send completion message to candidate
     await websocket.send_json({
         "type": "complete",
         "data": {
@@ -422,3 +458,109 @@ async def handle_request_finish(
             "reason": "user_completed",
         }
     })
+
+
+async def run_interview_event_loop(
+    graph,
+    config: Dict[str, Any],
+    websocket: WebSocket,
+    interview_id: str,
+    transcribe_service,
+    broadcaster,
+):
+    """
+    Shared WebSocket event loop for interview sessions.
+
+    Handles all message types: start, audio_chunk, answer_started,
+    answer_complete, violation, request_finish, and ping.
+
+    Used by both recruiter and candidate WebSocket endpoints.
+    """
+    import base64
+    import json
+
+    # Define transcript callbacks once (reused for all audio chunks)
+    async def on_partial(text):
+        try:
+            if interview_id in active_sessions:
+                await websocket.send_json({
+                    "type": "transcript_partial",
+                    "data": {"text": text}
+                })
+        except Exception as e:
+            logger.error(f"Failed to send partial transcript: {e}")
+
+    async def on_final(text):
+        try:
+            if interview_id in active_sessions:
+                await websocket.send_json({
+                    "type": "transcript_final",
+                    "data": {"text": text}
+                })
+        except Exception as e:
+            logger.error(f"Failed to send final transcript: {e}")
+
+    while True:
+        # Check for termination flag
+        session = get_session(interview_id) or {}
+        if session.get("terminated"):
+            await websocket.send_json({
+                "type": "terminated",
+                "data": {"message": "Interview terminated by recruiter"}
+            })
+            break
+
+        # Receive message
+        raw_msg = await websocket.receive_text()
+        msg = json.loads(raw_msg)
+        msg_type = msg.get("type", "")
+
+        logger.info(f"WS MESSAGE [{interview_id}]: type={msg_type}")
+
+        if msg_type == "start":
+            await run_graph_cycle(graph, config, websocket, interview_id, broadcaster)
+
+        elif msg_type == "audio_chunk":
+            chunk_data = msg.get("data", {})
+            audio_bytes = base64.b64decode(chunk_data.get("chunk", ""))
+            stream_id = f"stream-{interview_id}"
+
+            # Start stream if not active
+            if not transcribe_service.is_active(stream_id):
+                # Detect audio format from frontend (ogg-opus or webm-opus)
+                mime_type = chunk_data.get("mime_type", "")
+                media_format = "ogg-opus"
+                if "webm" in mime_type:
+                    media_format = "webm-opus"
+
+                await transcribe_service.start_stream(
+                    interview_id,
+                    on_partial=on_partial,
+                    on_final=on_final,
+                    media_format=media_format,
+                )
+
+            await transcribe_service.feed_audio(stream_id, audio_bytes)
+
+        elif msg_type == "answer_started":
+            await handle_answer_started(graph, config, interview_id, websocket)
+
+        elif msg_type == "answer_complete":
+            logger.info(f"Processing answer_complete for {interview_id}")
+            await handle_answer_complete(
+                graph, config, websocket, interview_id,
+                msg.get("data", {}), transcribe_service, broadcaster
+            )
+
+        elif msg_type == "violation":
+            await handle_violation(
+                graph, config, interview_id,
+                msg.get("data", {}), broadcaster
+            )
+
+        elif msg_type == "request_finish":
+            await handle_request_finish(websocket, interview_id, broadcaster)
+            break
+
+        elif msg_type == "ping":
+            await websocket.send_json({"type": "pong"})

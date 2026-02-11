@@ -6,7 +6,7 @@ These schemas define the expected LLM output format for:
 - Cheating detection signals
 """
 
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel, Field
 
 
@@ -236,48 +236,3 @@ class CheatingDetectionOutput(BaseModel):
         }
 
 
-class CheatingEscalationOutput(BaseModel):
-    """
-    Structured output for cheating escalation decisions.
-
-    Used when cumulative cheating signals exceed thresholds.
-    """
-
-    current_level: str = Field(
-        ...,
-        description="Current cheating level: 'none', 'warning_1', 'warning_2', 'penalty'",
-    )
-
-    escalate_to: Optional[str] = Field(
-        default=None,
-        description="Level to escalate to, if any",
-    )
-
-    should_terminate: bool = Field(
-        default=False,
-        description="Whether interview should be terminated",
-    )
-
-    termination_reason: Optional[str] = Field(
-        default=None,
-        description="Reason for termination if applicable",
-    )
-
-    cumulative_evidence: List[str] = Field(
-        default_factory=list,
-        description="Summary of accumulated cheating evidence",
-    )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "current_level": "warning_1",
-                "escalate_to": "warning_2",
-                "should_terminate": False,
-                "termination_reason": None,
-                "cumulative_evidence": [
-                    "Question 3: High parroting score (8.2)",
-                    "Question 5: Vocabulary mismatch detected",
-                ],
-            }
-        }

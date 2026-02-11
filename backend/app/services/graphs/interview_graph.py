@@ -17,7 +17,6 @@ Key Principles:
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional
 
@@ -31,7 +30,6 @@ from app.schemas.state import (
     InterviewPhase,
     RouterDecision,
     create_initial_state,
-    log_transition,
 )
 from app.services.graphs.nodes import (
     pillar_manager_node,
@@ -39,11 +37,7 @@ from app.services.graphs.nodes import (
     audio_pipeline_node,
     answer_analyzer_node,
 )
-from app.services.graphs.routers import (
-    DecisionRouter,
-    RouterConfig,
-    make_routing_decision,
-)
+from app.services.graphs.routers import make_routing_decision
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -136,28 +130,23 @@ def build_interview_graph(checkpointer: Optional[AsyncPostgresSaver] = None) -> 
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-async def _pillar_manager_wrapper(state: InterviewState) -> Dict[str, Any]:
-    """Wrapper for pillar_manager_node with error handling."""
-    try:
-        return await pillar_manager_node(state)
-    except Exception as e:
-        logger.error(f"Pillar manager error: {e}", exc_info=True)
-        return {
-            "error_count": state.get("error_count", 0) + 1,
-            "last_error": str(e),
-        }
+def _create_node_wrapper(node_func, node_name: str):
+    """Factory to create error-handling wrappers for graph nodes."""
+    async def wrapper(state: InterviewState) -> Dict[str, Any]:
+        try:
+            return await node_func(state)
+        except Exception as e:
+            logger.error(f"{node_name} error: {e}", exc_info=True)
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": str(e),
+            }
+    wrapper.__name__ = f"_{node_name}_wrapper"
+    return wrapper
 
 
-async def _question_engine_wrapper(state: InterviewState) -> Dict[str, Any]:
-    """Wrapper for question_engine_node with error handling."""
-    try:
-        return await question_engine_node(state)
-    except Exception as e:
-        logger.error(f"Question engine error: {e}", exc_info=True)
-        return {
-            "error_count": state.get("error_count", 0) + 1,
-            "last_error": str(e),
-        }
+_pillar_manager_wrapper = _create_node_wrapper(pillar_manager_node, "Pillar manager")
+_question_engine_wrapper = _create_node_wrapper(question_engine_node, "Question engine")
 
 
 async def _audio_pipeline_wrapper(state: InterviewState) -> Dict[str, Any]:
@@ -194,7 +183,7 @@ async def _audio_pipeline_wrapper(state: InterviewState) -> Dict[str, Any]:
 
 
 async def _answer_analyzer_wrapper(state: InterviewState) -> Dict[str, Any]:
-    """Wrapper for answer_analyzer_node with error handling."""
+    """Wrapper for answer_analyzer_node with error handling and fallback signals."""
     try:
         return await answer_analyzer_node(state)
     except Exception as e:
@@ -224,7 +213,7 @@ async def _decision_router_wrapper(state: InterviewState) -> Dict[str, Any]:
             "phase": updated_state.get("phase"),
             "termination_conditions": updated_state.get("termination_conditions"),
             "transition_log": updated_state.get("transition_log"),
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
         logger.error(f"Decision router error: {e}", exc_info=True)
@@ -280,165 +269,3 @@ def _route_from_decision_router(
 # GRAPH EXECUTION HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-
-async def create_interview_session(
-    interview_id: str,
-    candidate_id: str,
-    jd_id: str,
-    candidate_name: str,
-    candidate_email: str,
-    job_role: str,
-    job_requirements: Dict[str, Any],
-    resume_context: str,
-    focus_areas: list[Dict[str, str]],
-    config: Optional[Dict[str, Any]] = None,
-    checkpointer: Optional[AsyncPostgresSaver] = None,
-) -> InterviewState:
-    """
-    Create a new interview session with initialized state.
-
-    Args:
-        interview_id: UUID of the interview
-        candidate_id: UUID of the candidate
-        jd_id: UUID of the job description
-        candidate_name: Candidate's name
-        candidate_email: Candidate's email
-        job_role: Title of the job
-        job_requirements: Parsed JD requirements
-        resume_context: Extracted resume text
-        focus_areas: List of focus area dicts
-        config: Optional configuration overrides
-        checkpointer: Checkpointer for persistence
-
-    Returns:
-        Initialized InterviewState
-    """
-    state = create_initial_state(
-        interview_id=interview_id,
-        candidate_id=candidate_id,
-        jd_id=jd_id,
-        candidate_name=candidate_name,
-        candidate_email=candidate_email,
-        job_role=job_role,
-        job_requirements=job_requirements,
-        resume_context=resume_context,
-        focus_areas=focus_areas,
-        config=config,
-    )
-
-    logger.info(
-        f"Created interview session: interview_id={interview_id}, "
-        f"candidate={candidate_name}, pillars={len(focus_areas)}"
-    )
-
-    return state
-
-
-async def resume_with_answer(
-    graph: StateGraph,
-    thread_id: str,
-    answer_text: str,
-    audio_url: Optional[str] = None,
-    checkpointer: Optional[AsyncPostgresSaver] = None,
-) -> Dict[str, Any]:
-    """
-    Resume the graph with candidate's answer.
-
-    This is called after the graph has been interrupted at audio_pipeline.
-
-    Args:
-        graph: The compiled interview graph
-        thread_id: Thread ID for state lookup
-        answer_text: Transcribed answer text
-        audio_url: Optional S3 URL for audio
-        checkpointer: Checkpointer for state lookup
-
-    Returns:
-        Updated state after processing
-    """
-    config = {"configurable": {"thread_id": thread_id}}
-
-    # Inject the answer into state
-    state_update = {
-        "_injected_answer_text": answer_text,
-        "_injected_audio_url": audio_url,
-    }
-
-    logger.info(f"Resuming graph with answer: thread={thread_id}, length={len(answer_text)}")
-
-    # Resume the graph
-    result = await graph.ainvoke(state_update, config)
-
-    return result
-
-
-async def request_termination(
-    graph: StateGraph,
-    thread_id: str,
-    reason: str,
-    termination_type: str = "recruiter",
-    checkpointer: Optional[AsyncPostgresSaver] = None,
-) -> Dict[str, Any]:
-    """
-    Request interview termination.
-
-    This updates the termination conditions which the router will process.
-
-    Args:
-        graph: The compiled interview graph
-        thread_id: Thread ID for state lookup
-        reason: Reason for termination
-        termination_type: Type of termination
-        checkpointer: Checkpointer for state lookup
-
-    Returns:
-        Updated state
-    """
-    config = {"configurable": {"thread_id": thread_id}}
-
-    # Get current state
-    state = await graph.aget_state(config)
-    current_values = state.values if state else {}
-
-    # Update termination conditions
-    term_conditions = current_values.get("termination_conditions", {}).copy()
-
-    if termination_type == "recruiter":
-        term_conditions["recruiter_terminated"] = True
-        term_conditions["recruiter_termination_reason"] = reason
-    elif termination_type == "violation":
-        term_conditions["hard_violation_detected"] = True
-        term_conditions["violation_reason"] = reason
-    elif termination_type == "timeout":
-        term_conditions["interview_timeout"] = True
-
-    state_update = {"termination_conditions": term_conditions}
-
-    logger.info(f"Termination requested: thread={thread_id}, type={termination_type}")
-
-    # If graph is waiting for input, we need to inject a dummy answer to proceed
-    if current_values.get("awaiting_answer"):
-        state_update["_injected_answer_text"] = "[TERMINATED BY RECRUITER]"
-
-    result = await graph.ainvoke(state_update, config)
-    return result
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SINGLETON GRAPH INSTANCE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-_graph_instance: Optional[StateGraph] = None
-
-
-async def get_interview_graph(
-    checkpointer: Optional[AsyncPostgresSaver] = None,
-) -> StateGraph:
-    """Get or create the interview graph instance."""
-    global _graph_instance
-
-    if _graph_instance is None:
-        _graph_instance = build_interview_graph(checkpointer)
-
-    return _graph_instance

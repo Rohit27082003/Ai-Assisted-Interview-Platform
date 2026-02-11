@@ -99,6 +99,21 @@ class CandidateSessionInfo(BaseModel):
     email: str
     session_id: str
     session_expires_at: datetime
+    interview_window_start: Optional[datetime] = None
+    interview_window_end: Optional[datetime] = None
+
+
+class CreateSessionRequest(BaseModel):
+    """Request to create a candidate session with optional time window."""
+    interview_window_start: Optional[datetime] = None
+    interview_window_end: Optional[datetime] = None
+
+
+class UpdateTimeWindowRequest(BaseModel):
+    """Request to update a candidate's interview time window."""
+    interview_window_start: Optional[datetime] = None
+    interview_window_end: Optional[datetime] = None
+    send_notification: bool = Field(default=True, description="Send email notification to candidate about time window change")
 
 
 class GenerateSessionsResponse(BaseModel):

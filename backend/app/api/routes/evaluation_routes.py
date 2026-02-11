@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.core.database import get_db
 from app.models.models import (
-    Interview, Candidate, Transcript, Evaluation, Report,
+    Candidate, Transcript, Evaluation, Report,
     InterviewStatus, CandidateStatus, Recommendation,
 )
 from app.schemas.schemas import EvaluationResponse, EvaluationItem, ReportResponse
@@ -15,6 +15,7 @@ from app.services.graphs.evaluation import build_evaluation_graph
 from app.services.graphs.reporting import build_reporting_graph
 from app.models.models import JobDescription
 from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedUser
+from app.api.utils.db_utils import verify_interview_ownership, verify_report_ownership
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -28,21 +29,7 @@ async def evaluate_interview(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Run evaluation graph on a completed interview."""
-    # Verify ownership via join
-    query = (
-        select(Interview)
-        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
-        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
-        .where(
-            Interview.interview_id == interview_id,
-            JobDescription.recruiter_id == user.recruiter_id
-        )
-    )
-    result = await db.execute(query)
-    interview = result.scalar_one_or_none()
-
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = await verify_interview_ownership(db, interview_id, user.recruiter_id)
 
     if interview.status not in (InterviewStatus.COMPLETED, InterviewStatus.TERMINATED):
         raise HTTPException(status_code=400, detail="Interview must be completed or terminated before evaluation")
@@ -144,21 +131,7 @@ async def generate_report(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Generate a recruiter-grade report for a completed and evaluated interview."""
-    # Verify ownership via join
-    query = (
-        select(Interview)
-        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
-        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
-        .where(
-            Interview.interview_id == interview_id,
-            JobDescription.recruiter_id == user.recruiter_id
-        )
-    )
-    result = await db.execute(query)
-    interview = result.scalar_one_or_none()
-
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = await verify_interview_ownership(db, interview_id, user.recruiter_id)
 
     candidate = await db.get(Candidate, interview.candidate_id)
     jd = await db.get(JobDescription, candidate.jd_id) if candidate else None
@@ -291,21 +264,7 @@ async def get_report(
     user: AuthenticatedUser = Depends(require_recruiter),
 ):
     """Retrieve an existing report."""
-    # Verify ownership via join chain
-    query = (
-        select(Report)
-        .join(Interview, Report.interview_id == Interview.interview_id)
-        .join(Candidate, Interview.candidate_id == Candidate.candidate_id)
-        .join(JobDescription, Candidate.jd_id == JobDescription.jd_id)
-        .where(
-            Report.interview_id == interview_id,
-            JobDescription.recruiter_id == user.recruiter_id
-        )
-    )
-    result = await db.execute(query)
-    report = result.scalar_one_or_none()
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
+    report = await verify_report_ownership(db, interview_id, user.recruiter_id)
 
     return ReportResponse(
         report_id=report.report_id,

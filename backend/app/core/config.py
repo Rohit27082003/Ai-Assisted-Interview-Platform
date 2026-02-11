@@ -22,10 +22,6 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_TEMPERATURE: float = 0.3
     GROQ_MAX_TOKENS: int = 4096
-    GOOGLE_API_KEY: str
-    GOOGLE_MODEL: str = "gemini-2.5-flash"
-    GOOGLE_TEMPERATURE: float = 0.3
-    GOOGLE_MAX_TOKENS: int = 4096
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/interview_db"
@@ -84,7 +80,7 @@ class Settings(BaseSettings):
     AWS_REGION: str = "ap-south-1"
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_S3_BUCKET: str = "interview-audio-uploads"
+    AWS_S3_BUCKET: str = "interview-audio-uploads-09"
 
     # Cognito
     COGNITO_USER_POOL_ID: str = ""

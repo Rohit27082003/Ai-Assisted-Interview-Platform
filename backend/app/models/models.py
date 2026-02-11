@@ -18,6 +18,7 @@ from sqlalchemy.orm import relationship
 import enum
 
 from app.core.database import Base
+from app.schemas.state.enums import CheatingLevel
 
 
 def utc_now():
@@ -47,13 +48,6 @@ class InterviewStatus(str, enum.Enum):
     TERMINATED = "terminated"
 
 
-class CheatingLevel(str, enum.Enum):
-    NONE = "none"
-    WARNING_1 = "warning_1"
-    WARNING_2 = "warning_2"
-    PENALTY = "penalty"
-
-
 class Recommendation(str, enum.Enum):
     HIRE = "hire"
     NO_HIRE = "no_hire"
@@ -77,6 +71,10 @@ class JobDescription(Base):
     chroma_collection_id = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    # Default interview time window for all candidates under this JD (can be overridden at candidate level)
+    interview_window_start = Column(DateTime(timezone=True), nullable=True)
+    interview_window_end = Column(DateTime(timezone=True), nullable=True)
 
     recruiter_id = Column(UUID(as_uuid=True), ForeignKey("recruiters.recruiter_id"), nullable=True) # Nullable for now, but strictly we enforce it in code
     
@@ -104,6 +102,11 @@ class Candidate(Base):
     session_id = Column(String(64), unique=True, nullable=True, index=True)
     session_expires_at = Column(DateTime(timezone=True), nullable=True)
     session_created_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Interview time window (recruiter-controlled access window)
+    interview_window_start = Column(DateTime(timezone=True), nullable=True)
+    interview_window_end = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

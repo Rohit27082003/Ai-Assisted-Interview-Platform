@@ -100,32 +100,26 @@ export default function CandidateLoginPage() {
             <form onSubmit={handleSubmit} className="space-y-4">
               {error ? <ErrorState title="Sign in failed" message={error} /> : null}
 
-              <div className="relative">
-                <Key className="pointer-events-none absolute left-3 top-9 h-4 w-4 text-slate-400" />
-                <Input
-                  id="sessionId"
-                  label="Session ID"
-                  type="text"
-                  value={sessionId}
-                  onChange={(event) => setSessionId(event.target.value)}
-                  placeholder="Enter your session ID"
-                  className="pl-9"
-                />
-              </div>
+              <Input
+                id="sessionId"
+                label="Session ID"
+                type="text"
+                value={sessionId}
+                onChange={(event) => setSessionId(event.target.value)}
+                placeholder="Enter your session ID"
+                startIcon={<Key className="h-4 w-4" />}
+              />
 
-              <div className="relative">
-                <Mail className="pointer-events-none absolute left-3 top-9 h-4 w-4 text-slate-400" />
-                <Input
-                  id="email"
-                  label="Email"
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                  className="pl-9"
-                />
-              </div>
+              <Input
+                id="email"
+                label="Email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                startIcon={<Mail className="h-4 w-4" />}
+              />
 
               <Button type="submit" className="w-full" isLoading={isLoading}>
                 {!isLoading ? <ArrowRight className="h-4 w-4" /> : null}
