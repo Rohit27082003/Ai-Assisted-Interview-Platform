@@ -111,10 +111,14 @@ async def generate_recommendation_node(state: ReportGraphState) -> ReportGraphSt
         f"Weaknesses: {', '.join(state.get('weaknesses', []))}"
     )
 
+    # Convert 1-5 scale to 0-100 for the prompt's recommendation framework
+    avg_score_1_5 = state.get("average_score", 0)
+    overall_score_100 = round((avg_score_1_5 / 5.0) * 100, 1) if avg_score_1_5 else 0.0
+
     prompt_inputs = {
         "job_role": state.get("jd_title", "Candidate"),
         "job_requirements": "Standard requirements",
-        "overall_score": str(state.get("average_score", 0)),
+        "overall_score": str(overall_score_100),
         "performance_analysis": performance_analysis,
         "cheating_assessment": cheating_summary or "Clean",
         "team_context": "General hiring context",

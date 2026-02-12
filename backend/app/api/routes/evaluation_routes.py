@@ -59,6 +59,9 @@ async def evaluate_interview(
         for t in transcripts
     ]
 
+    # Collect cheating flags from interview state
+    cheating_flags = interview.state_json.get("cheating_flags", []) if interview.state_json else []
+
     # Run Evaluation Graph
     eval_graph = build_evaluation_graph()
     eval_result = await eval_graph.ainvoke({
@@ -69,6 +72,7 @@ async def evaluate_interview(
         "evaluations": [],
         "average_score": 0.0,
         "pillar_scores": {},
+        "cheating_flags": cheating_flags,
     })
 
     # Store evaluations in DB
@@ -91,12 +95,17 @@ async def evaluate_interview(
             depth=ev.get("depth", 3),
             reasoning=ev.get("reasoning", 3),
             clarity=ev.get("clarity", 3),
+            relevance=ev.get("relevance", 3),
+            practical_application=ev.get("practical_application", 3),
             overall_score=ev.get("overall_score", 3.0),
             justification=ev.get("justification", ""),
+            expected_vs_actual_comparison=ev.get("expected_vs_actual_comparison", ""),
+            similarity_score=ev.get("similarity_score", 0.0),
         )
         db.add(db_eval)
 
         eval_items.append(EvaluationItem(
+            pillar=ev.get("pillar", ""),
             question=ev.get("question", ""),
             answer=ev.get("answer", ""),
             reference_answer=ev.get("reference_answer", ""),
@@ -104,8 +113,12 @@ async def evaluate_interview(
             depth=ev.get("depth", 3),
             reasoning=ev.get("reasoning", 3),
             clarity=ev.get("clarity", 3),
+            relevance=ev.get("relevance", 3),
+            practical_application=ev.get("practical_application", 3),
             overall_score=ev.get("overall_score", 3.0),
             justification=ev.get("justification", ""),
+            expected_vs_actual_comparison=ev.get("expected_vs_actual_comparison", ""),
+            similarity_score=ev.get("similarity_score", 0.0),
         ))
 
     # Update candidate status
@@ -151,12 +164,17 @@ async def generate_report(
             "pillar": e.pillar,
             "question": e.question,
             "answer": e.answer,
+            "reference_answer": e.reference_answer or "",
             "correctness": e.correctness,
             "depth": e.depth,
             "reasoning": e.reasoning,
             "clarity": e.clarity,
+            "relevance": e.relevance or 0,
+            "practical_application": e.practical_application or 0,
             "overall_score": e.overall_score,
             "justification": e.justification,
+            "expected_vs_actual_comparison": e.expected_vs_actual_comparison or "",
+            "similarity_score": e.similarity_score or 0.0,
         }
         for e in evaluations
     ]
@@ -176,12 +194,24 @@ async def generate_report(
     # Collect cheating flags from interview state
     cheating_flags = interview.state_json.get("cheating_flags", []) if interview.state_json else []
 
+    # Calculate interview duration
+    interview_duration = 0.0
+    if interview.started_at and interview.ended_at:
+        interview_duration = round(
+            (interview.ended_at - interview.started_at).total_seconds() / 60.0, 1
+        )
+
+    # Get focus areas and question count from candidate/interview
+    focus_areas = candidate.focus_areas if candidate and candidate.focus_areas else []
+    total_questions = interview.total_questions or len(evaluations)
+
     # Run Reporting Graph
     report_graph = build_reporting_graph()
     report_result = await report_graph.ainvoke({
         "interview_id": str(interview_id),
         "candidate_id": str(interview.candidate_id),
         "candidate_name": candidate.name if candidate else "Unknown",
+        "candidate_email": candidate.email if candidate else "",
         "jd_title": jd.title if jd else "Unknown",
         "jd_object": jd.parsed_data if jd else {},
         "evaluations": eval_data,
@@ -195,14 +225,21 @@ async def generate_report(
         "summary": "",
         "detailed_feedback": {},
         "final_score": overall_avg,
+        "focus_areas": focus_areas,
+        "total_questions_asked": total_questions,
+        "interview_duration_minutes": interview_duration,
+        "hitl_database_key": "",
+        "transcript_summary": [],
     })
 
     # Determine recommendation enum
     rec_str = report_result.get("recommendation", "borderline")
     rec_enum = {
+        "strong_hire": Recommendation.HIRE,
         "hire": Recommendation.HIRE,
-        "no_hire": Recommendation.NO_HIRE,
         "borderline": Recommendation.BORDERLINE,
+        "no_hire": Recommendation.NO_HIRE,
+        "strong_no_hire": Recommendation.NO_HIRE,
     }.get(rec_str, Recommendation.BORDERLINE)
 
     # Store report in DB
@@ -239,6 +276,9 @@ async def generate_report(
         f"recommendation={rec_str}"
     )
 
+    # Normalize recommendation string to the 3-value set the frontend expects
+    normalized_rec = rec_enum.value  # "hire", "no_hire", or "borderline"
+
     return ReportResponse(
         report_id=report.report_id,
         interview_id=interview_id,
@@ -250,7 +290,7 @@ async def generate_report(
         topic_scores=report.topic_scores,
         final_score=report.final_score,
         confidence_score=report.confidence_score,
-        recommendation=rec_str,
+        recommendation=normalized_rec,
         summary=report.summary,
         detailed_feedback=report.detailed_feedback,
         created_at=report.created_at,

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     GROQ_TEMPERATURE: float = 0.3
     GROQ_MAX_TOKENS: int = 4096
 
+
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/interview_db"
     CHECKPOINT_DB_URL: str = "postgresql://postgres:postgres@localhost:5432/interview_db"

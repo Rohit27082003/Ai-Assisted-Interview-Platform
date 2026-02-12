@@ -97,6 +97,7 @@ export interface WSMessage {
 }
 
 export interface EvaluationItem {
+  pillar: string;
   question: string;
   answer: string;
   reference_answer: string;
@@ -104,8 +105,12 @@ export interface EvaluationItem {
   depth: number;
   reasoning: number;
   clarity: number;
+  relevance: number;
+  practical_application: number;
   overall_score: number;
   justification: string;
+  expected_vs_actual_comparison: string;
+  similarity_score: number;
 }
 
 export interface EvaluationResponse {

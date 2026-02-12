@@ -186,15 +186,20 @@ class InterviewResponse(BaseModel):
 # ── Evaluation Schemas ────────────────────────────────────────────
 
 class EvaluationItem(BaseModel):
+    pillar: str = ""
     question: str
     answer: str
     reference_answer: str
-    correctness: int = Field(ge=1, le=5)
-    depth: int = Field(ge=1, le=5)
-    reasoning: int = Field(ge=1, le=5)
-    clarity: int = Field(ge=1, le=5)
+    correctness: float = Field(ge=0, le=5)
+    depth: float = Field(ge=0, le=5)
+    reasoning: float = Field(ge=0, le=5)
+    clarity: float = Field(ge=0, le=5)
+    relevance: float = Field(ge=0, le=5, default=0)
+    practical_application: float = Field(ge=0, le=5, default=0)
     overall_score: float
     justification: str
+    expected_vs_actual_comparison: str = ""
+    similarity_score: float = 0.0
 
 
 class EvaluationResponse(BaseModel):

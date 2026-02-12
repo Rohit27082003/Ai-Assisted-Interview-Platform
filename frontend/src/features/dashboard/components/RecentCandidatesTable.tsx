@@ -65,6 +65,23 @@ export default function RecentCandidatesTable({ candidates }: RecentCandidatesTa
               </Badge>
             ),
           },
+          {
+            key: 'actions',
+            header: '',
+            render: (candidate) => {
+              if (['interviewed', 'evaluated', 'reported'].includes(candidate.status) && candidate.interview_id) {
+                return (
+                  <Button
+                    variant="secondary"
+                    onClick={() => navigate(`/report/${candidate.interview_id}`)}
+                  >
+                    View Report
+                  </Button>
+                );
+              }
+              return null;
+            },
+          },
         ]}
       />
     </Card>

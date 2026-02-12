@@ -67,7 +67,7 @@ export default function InterviewPage() {
     setRecording(false);
   }, []);
 
-  const finalizeSubmission = useCallback(() => {
+  const finalizeSubmission = useCallback(async () => {
     // Guard: prevent double submission for the same question
     if (answerSubmittedRef.current) return;
     answerSubmittedRef.current = true;
@@ -79,9 +79,33 @@ export default function InterviewPage() {
       setTranscript((prev) => [...prev, { q: currentQuestionRef.current!.question_text, a: answerTextRef.current }]);
     }
 
+    // Combine recorded audio chunks into base64 for S3 upload
+    let audioBase64: string | undefined;
+    if (audioChunksRef.current.length > 0) {
+      try {
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: audioChunksRef.current[0].type,
+        });
+        audioBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const dataUrl = reader.result as string;
+            resolve(dataUrl.split(',')[1]);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(audioBlob);
+        });
+      } catch (err) {
+        console.error('Failed to encode audio for upload:', err);
+      }
+    }
+
     wsRef.current?.send(JSON.stringify({
       type: 'answer_complete',
-      data: { text: answerTextRef.current },
+      data: {
+        text: answerTextRef.current,
+        ...(audioBase64 ? { audio_data: audioBase64 } : {}),
+      },
     }));
 
     // If user requested to finish the interview, send request_finish after answer is submitted

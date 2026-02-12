@@ -303,6 +303,13 @@ async def handle_answer_complete(
             logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
             # Continue without audio URL — don't block the interview
 
+    # Capture which question we're answering BEFORE the graph cycle advances
+    pre_cycle_state = await graph.aget_state(config)
+    answered_question_id = (
+        pre_cycle_state.values.get("current_question_id")
+        if pre_cycle_state and pre_cycle_state.values else None
+    )
+
     # Update state with answer - CRITICAL: Include the injected keys
     await graph.aupdate_state(config, {
         "_injected_answer_text": final_answer,
@@ -319,31 +326,48 @@ async def handle_answer_complete(
             interview = await db.get(Interview, UUID(interview_id))
             if interview:
                 interview.state_json = serialize_state(dict(state_snap.values))
-                
-                # Persist Transcript
+
+                # Persist Transcript — find the ANSWERED question record by ID
+                # (question_records[-1] would be the NEW unanswered question
+                #  after graph cycle advances through question_engine)
                 question_records = state_snap.values.get("question_records", [])
-                if question_records:
-                    last = question_records[-1]
-                    # Check if transcript already exists
+                answered_record = None
+                if answered_question_id:
+                    answered_record = next(
+                        (r for r in question_records
+                         if r.get("question_id") == answered_question_id),
+                        None,
+                    )
+
+                if answered_record:
+                    # Check if transcript already exists for this question
                     existing_transcript = await db.execute(
                         select(Transcript).where(
                             Transcript.interview_id == interview.interview_id,
-                            Transcript.question == last.get("question_text") 
+                            Transcript.question == answered_record.get("question_text"),
                         )
                     )
                     if not existing_transcript.scalars().first():
-                         transcript_entry = Transcript(
+                        # Compute question_number from position in records
+                        q_index = next(
+                            (i for i, r in enumerate(question_records)
+                             if r.get("question_id") == answered_question_id),
+                            0,
+                        )
+                        transcript_entry = Transcript(
                             interview_id=interview.interview_id,
-                            pillar=last.get("pillar_name", "General"),
-                            question_number=state_snap.values.get("total_questions_asked", 0),
-                            question=last.get("question_text", ""),
-                            answer=last.get("answer_text", "(No answer)"),
-                            audio_url=last.get("answer_audio_url"),
-                            is_follow_up=last.get("is_follow_up", False),
-                            created_at=datetime.now(timezone.utc)
-                         )
-                         db.add(transcript_entry)
-                
+                            pillar=answered_record.get("pillar_name", "General"),
+                            question_number=q_index + 1,
+                            question=answered_record.get("question_text", ""),
+                            answer=answered_record.get("answer_text", "(No answer)"),
+                            audio_url=answered_record.get("answer_audio_url"),
+                            is_follow_up=answered_record.get("is_follow_up", False),
+                            reading_time_used=answered_record.get("reading_time_used", 0.0),
+                            answer_time_used=answered_record.get("answer_time_used", 0.0),
+                            created_at=datetime.now(timezone.utc),
+                        )
+                        db.add(transcript_entry)
+
                 await db.commit()
 
 async def handle_violation(
