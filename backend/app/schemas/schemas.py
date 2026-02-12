@@ -200,6 +200,7 @@ class EvaluationItem(BaseModel):
     justification: str
     expected_vs_actual_comparison: str = ""
     similarity_score: float = 0.0
+    audio_url: Optional[str] = None
 
 
 class EvaluationResponse(BaseModel):

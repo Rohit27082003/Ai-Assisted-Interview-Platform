@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   CheckCircle, XCircle, AlertTriangle, Award, TrendingUp,
-  TrendingDown, Shield, FileText, ArrowLeft, ChevronDown, ChevronRight
+  TrendingDown, Shield, FileText, ArrowLeft, ChevronDown, ChevronRight,
+  Volume2, Download
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { evaluationApi } from '../services/api';
@@ -146,6 +147,28 @@ export default function ReportPage() {
               <h5 className="text-xs font-semibold text-gray-500 uppercase mb-1">Candidate's Answer</h5>
               <p className="text-sm text-gray-700 bg-white p-3 rounded border">{ev.answer || 'No answer provided'}</p>
             </div>
+
+            {/* Audio Playback */}
+            {ev.audio_url && (
+              <div>
+                <h5 className="text-xs font-semibold text-gray-500 uppercase mb-1 flex items-center gap-1">
+                  <Volume2 className="w-3.5 h-3.5" /> Audio Recording
+                </h5>
+                <div className="flex items-center gap-3 bg-white p-3 rounded border">
+                  <audio controls preload="none" className="flex-1 h-8">
+                    <source src={ev.audio_url} />
+                  </audio>
+                  <a
+                    href={ev.audio_url}
+                    download
+                    className="text-primary-600 hover:text-primary-700 p-1"
+                    title="Download audio"
+                  >
+                    <Download className="w-4 h-4" />
+                  </a>
+                </div>
+              </div>
+            )}
 
             {/* Reference Answer */}
             <div>
@@ -347,7 +370,7 @@ export default function ReportPage() {
         </div>
       </div>
 
-      {/* Cheating Flags */}
+      {/* Integrity Flags */}
       {report.cheating_flags.length > 0 && (
         <div className="card bg-yellow-50 border-yellow-200">
           <div className="flex items-center gap-2 mb-4">
@@ -356,18 +379,54 @@ export default function ReportPage() {
               Integrity Flags ({report.cheating_flags.length})
             </h3>
           </div>
-          <ul className="space-y-2">
-            {report.cheating_flags.map((f: any, i) => (
-              <li key={i} className="text-sm text-yellow-700 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                {typeof f === 'string' ? f : (
-                  <span>
-                    <span className="font-semibold">{f.level || 'Warning'}:</span>{' '}
-                    {Array.isArray(f.reasons) ? f.reasons.join(', ') : JSON.stringify(f)}
-                  </span>
-                )}
-              </li>
-            ))}
+          <ul className="space-y-3">
+            {report.cheating_flags.map((f: any, i) => {
+              // Parse flag - could be a string or an object
+              if (typeof f === 'string') {
+                return (
+                  <li key={i} className="text-sm text-yellow-700 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    <span>{f}</span>
+                  </li>
+                );
+              }
+
+              // Object flag - extract recruiter-relevant fields
+              const severity = f.severity ?? 0;
+              const severityLabel = severity >= 7 ? 'High' : severity >= 4 ? 'Medium' : 'Low';
+              const severityColor = severity >= 7
+                ? 'bg-red-100 text-red-700'
+                : severity >= 4
+                  ? 'bg-yellow-100 text-yellow-700'
+                  : 'bg-gray-100 text-gray-600';
+              const reason = f.reason || 'Suspicious behavior detected';
+              const patterns: string[] = f.details?.pattern_flags || [];
+
+              return (
+                <li key={i} className="bg-white border border-yellow-200 rounded-lg p-3 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-yellow-600" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${severityColor}`}>
+                          {severityLabel} Severity
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-700">{reason}</p>
+                      {patterns.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {patterns.map((p, j) => (
+                            <span key={j} className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">
+                              {p}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -450,6 +509,28 @@ export default function ReportPage() {
                           {ev.answer || 'No answer provided'}
                         </p>
                       </div>
+
+                      {/* Audio Playback */}
+                      {ev.audio_url && (
+                        <div>
+                          <h5 className="text-xs font-semibold text-gray-500 uppercase mb-1 flex items-center gap-1">
+                            <Volume2 className="w-3.5 h-3.5" /> Audio Recording
+                          </h5>
+                          <div className="flex items-center gap-3 bg-white p-3 rounded border">
+                            <audio controls preload="none" className="flex-1 h-8">
+                              <source src={ev.audio_url} />
+                            </audio>
+                            <a
+                              href={ev.audio_url}
+                              download
+                              className="text-primary-600 hover:text-primary-700 p-1"
+                              title="Download audio"
+                            >
+                              <Download className="w-4 h-4" />
+                            </a>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Score Dimensions */}
                       {ev.scores && (

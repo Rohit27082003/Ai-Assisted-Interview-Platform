@@ -111,7 +111,7 @@ def create_initial_state(
 
         # Configuration
         max_questions_per_pillar=config.get("max_questions_per_pillar", 5),
-        max_follow_ups_per_question=config.get("max_follow_ups_per_question", 2),
+        max_follow_ups_per_pillar=config.get("max_follow_ups_per_pillar", 4),
         max_total_questions=config.get("max_total_questions", 25),
         difficulty_progression_enabled=config.get("difficulty_progression_enabled", True),
 

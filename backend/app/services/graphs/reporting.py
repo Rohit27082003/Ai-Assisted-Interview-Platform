@@ -235,6 +235,7 @@ async def compile_report_node(state: ReportGraphState) -> ReportGraphState:
                 "similarity_score": ev.get("similarity_score", 0.0),
                 "cheating_flagged": ev.get("cheating_flagged", False),
                 "cheating_penalty": ev.get("cheating_penalty", 0.0),
+                "audio_url": ev.get("audio_url"),
             }
             for idx, ev in enumerate(state.get("evaluations", []))
         ],

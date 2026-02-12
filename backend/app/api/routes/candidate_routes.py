@@ -5,6 +5,7 @@ from typing import List
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -38,6 +39,14 @@ from app.core.config import get_settings
 logger = get_logger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
+
+IST = ZoneInfo("Asia/Kolkata")
+
+def _format_ist(dt: datetime) -> str:
+    """Convert a datetime to IST and format for display in emails."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).strftime("%B %d, %Y at %I:%M %p IST")
 
 # Local uploads directory for development fallback
 UPLOADS_DIR = Path(__file__).parent.parent.parent.parent / "uploads" / "resumes"
@@ -699,8 +708,8 @@ async def create_candidate_session(
     # Format time window message if provided
     time_window_html = ""
     if candidate.interview_window_start and candidate.interview_window_end:
-        start_str = candidate.interview_window_start.strftime("%B %d, %Y at %I:%M %p %Z")
-        end_str = candidate.interview_window_end.strftime("%B %d, %Y at %I:%M %p %Z")
+        start_str = _format_ist(candidate.interview_window_start)
+        end_str = _format_ist(candidate.interview_window_end)
         time_window_html = f"""
             <p><strong>Interview Time Window:</strong></p>
             <p>You can access the interview between:</p>
@@ -805,8 +814,8 @@ async def update_candidate_time_window(
             change_message = "<p><strong>Update:</strong> The interview time window restriction has been removed. You can now access the interview anytime before your session expires.</p>"
         elif not old_start and not old_end:
             # Time window added
-            start_str = candidate.interview_window_start.strftime("%B %d, %Y at %I:%M %p %Z")
-            end_str = candidate.interview_window_end.strftime("%B %d, %Y at %I:%M %p %Z")
+            start_str = _format_ist(candidate.interview_window_start)
+            end_str = _format_ist(candidate.interview_window_end)
             change_message = f"""
                 <p><strong>Update:</strong> An interview time window has been set for you.</p>
                 <p>You can access the interview between:</p>
@@ -817,8 +826,8 @@ async def update_candidate_time_window(
             """
         else:
             # Time window modified
-            start_str = candidate.interview_window_start.strftime("%B %d, %Y at %I:%M %p %Z") if candidate.interview_window_start else "Not set"
-            end_str = candidate.interview_window_end.strftime("%B %d, %Y at %I:%M %p %Z") if candidate.interview_window_end else "Not set"
+            start_str = _format_ist(candidate.interview_window_start) if candidate.interview_window_start else "Not set"
+            end_str = _format_ist(candidate.interview_window_end) if candidate.interview_window_end else "Not set"
             change_message = f"""
                 <p><strong>Update:</strong> Your interview time window has been updated.</p>
                 <p>New time window:</p>

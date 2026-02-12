@@ -93,7 +93,7 @@ class InterviewState(TypedDict, total=False):
 
     # ─── Configuration ────────────────────────────────────────────────────────
     max_questions_per_pillar: int
-    max_follow_ups_per_question: int
+    max_follow_ups_per_pillar: int
     max_total_questions: int
     difficulty_progression_enabled: bool
 

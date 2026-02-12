@@ -188,9 +188,9 @@ export default function ResumeAnalysisPage() {
 
                             <div className="space-y-6">
                                 <ScoreProgress
-                                    label="Projects & Experience"
+                                    label="Projects"
                                     score={scores.projects}
-                                    weight="40%"
+                                    weight="30%"
                                     icon={<Briefcase className="w-4 h-4" />}
                                     color="bg-gradient-to-r from-blue-600 to-cyan-400 shadow-[0_0_10px_rgba(56,189,248,0.4)]"
                                     iconColor="text-cyan-400 bg-cyan-900/20"
@@ -198,10 +198,18 @@ export default function ResumeAnalysisPage() {
                                 <ScoreProgress
                                     label="Technical Skills"
                                     score={scores.skills}
-                                    weight="30%"
+                                    weight="25%"
                                     icon={<Layers className="w-4 h-4" />}
                                     color="bg-gradient-to-r from-purple-600 to-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.4)]"
                                     iconColor="text-pink-400 bg-pink-900/20"
+                                />
+                                <ScoreProgress
+                                    label="Work Experience"
+                                    score={scores.experience}
+                                    weight="25%"
+                                    icon={<Share2 className="w-4 h-4" />}
+                                    color="bg-gradient-to-r from-orange-600 to-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
+                                    iconColor="text-amber-400 bg-amber-900/20"
                                 />
                                 <ScoreProgress
                                     label="Semantic Match (AI)"
@@ -210,14 +218,6 @@ export default function ResumeAnalysisPage() {
                                     icon={<Brain className="w-4 h-4" />}
                                     color="bg-gradient-to-r from-indigo-600 to-violet-400 shadow-[0_0_10px_rgba(139,92,246,0.4)]"
                                     iconColor="text-violet-400 bg-violet-900/20"
-                                />
-                                <ScoreProgress
-                                    label="Work History"
-                                    score={scores.experience}
-                                    weight="10%"
-                                    icon={<Share2 className="w-4 h-4" />}
-                                    color="bg-gradient-to-r from-orange-600 to-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
-                                    iconColor="text-amber-400 bg-amber-900/20"
                                 />
                                 <ScoreProgress
                                     label="Tools & Technologies"

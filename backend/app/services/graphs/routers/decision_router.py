@@ -49,8 +49,8 @@ class RouterConfig:
     """Configuration for the decision router."""
 
     # Question limits
-    max_questions_per_pillar: int = 5
-    max_follow_ups_per_question: int = 2
+    max_questions_per_pillar: int = 5   # Total questions per topic INCLUDING follow-ups
+    max_follow_ups_per_pillar: int = 4  # Max 3-4 follow-ups per topic
     max_total_questions: int = 25
 
     # Cheating thresholds
@@ -245,8 +245,14 @@ def _check_max_questions(state: InterviewState, config: RouterConfig) -> GuardRe
 
 
 def _check_pillar_complete(state: InterviewState, config: RouterConfig) -> GuardResult:
-    """Check if current pillar is complete."""
+    """Check if current pillar is complete.
+
+    Total questions per pillar = initial questions + follow-ups.
+    Both count toward the max_questions_per_pillar limit (default 5).
+    """
     questions_in_pillar = state.get("questions_in_current_pillar", 0)
+    follow_ups_in_pillar = state.get("follow_ups_in_current_pillar", 0)
+    total_in_pillar = questions_in_pillar + follow_ups_in_pillar
     max_per_pillar = state.get("max_questions_per_pillar", config.max_questions_per_pillar)
 
     current_pillar = get_current_pillar(state)
@@ -258,28 +264,44 @@ def _check_pillar_complete(state: InterviewState, config: RouterConfig) -> Guard
             priority=6,
         )
 
-    triggered = questions_in_pillar >= max_per_pillar
+    triggered = total_in_pillar >= max_per_pillar
 
     return GuardResult(
         condition=GuardCondition.PILLAR_COMPLETE,
         triggered=triggered,
-        reason=f"Asked {questions_in_pillar}/{max_per_pillar} questions in pillar",
+        reason=f"Asked {total_in_pillar}/{max_per_pillar} in pillar (initial={questions_in_pillar}, follow-ups={follow_ups_in_pillar})",
         priority=6,
-        metadata={"questions_in_pillar": questions_in_pillar, "max_per_pillar": max_per_pillar},
+        metadata={"total_in_pillar": total_in_pillar, "max_per_pillar": max_per_pillar},
     )
 
 
 def _check_should_follow_up(state: InterviewState, config: RouterConfig) -> GuardResult:
-    """Check if a follow-up question is appropriate."""
-    follow_ups_in_pillar = state.get("follow_ups_in_current_pillar", 0)
-    max_follow_ups = state.get("max_follow_ups_per_question", config.max_follow_ups_per_question)
+    """Check if a follow-up question is appropriate.
 
-    # Can't follow up if we've used all follow-ups
+    Follow-ups are limited per pillar (max 4) AND the total questions
+    in the pillar (initial + follow-ups) cannot exceed max_questions_per_pillar (5).
+    """
+    follow_ups_in_pillar = state.get("follow_ups_in_current_pillar", 0)
+    questions_in_pillar = state.get("questions_in_current_pillar", 0)
+    total_in_pillar = questions_in_pillar + follow_ups_in_pillar
+    max_follow_ups = state.get("max_follow_ups_per_pillar", config.max_follow_ups_per_pillar)
+    max_per_pillar = state.get("max_questions_per_pillar", config.max_questions_per_pillar)
+
+    # Can't follow up if we've used all follow-ups for this pillar
     if follow_ups_in_pillar >= max_follow_ups:
         return GuardResult(
             condition=GuardCondition.SHOULD_FOLLOW_UP,
             triggered=False,
-            reason=f"Used {follow_ups_in_pillar}/{max_follow_ups} follow-ups",
+            reason=f"Used {follow_ups_in_pillar}/{max_follow_ups} follow-ups in pillar",
+            priority=7,
+        )
+
+    # Can't follow up if the pillar would exceed its total question limit
+    if total_in_pillar + 1 > max_per_pillar:
+        return GuardResult(
+            condition=GuardCondition.SHOULD_FOLLOW_UP,
+            triggered=False,
+            reason=f"Pillar at capacity: {total_in_pillar}/{max_per_pillar} questions",
             priority=7,
         )
 
@@ -292,18 +314,18 @@ def _check_should_follow_up(state: InterviewState, config: RouterConfig) -> Guar
     triggered = (
         has_gaps
         and config.low_score_threshold < depth_score < config.high_score_threshold
-        and follow_ups_in_pillar < max_follow_ups
     )
 
+    follow_ups_remaining = min(max_follow_ups - follow_ups_in_pillar, max_per_pillar - total_in_pillar)
     return GuardResult(
         condition=GuardCondition.SHOULD_FOLLOW_UP,
         triggered=triggered,
-        reason=f"Gaps: {has_gaps}, Depth: {depth_score:.1f}, Follow-ups left: {max_follow_ups - follow_ups_in_pillar}",
+        reason=f"Gaps: {has_gaps}, Depth: {depth_score:.1f}, Follow-ups left: {follow_ups_remaining}",
         priority=7,
         metadata={
             "has_gaps": has_gaps,
             "depth_score": depth_score,
-            "follow_ups_remaining": max_follow_ups - follow_ups_in_pillar,
+            "follow_ups_remaining": follow_ups_remaining,
         },
     )
 

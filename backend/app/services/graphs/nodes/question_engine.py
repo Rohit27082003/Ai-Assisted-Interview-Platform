@@ -103,9 +103,11 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
         message_history = [AIMessage(content=question_text)]
 
         # Update counters
+        # Both initial questions and follow-ups count toward total_questions_asked
+        # so that the MAX_QUESTIONS_REACHED guard works correctly.
         questions_in_pillar = state.get("questions_in_current_pillar", 0)
         follow_ups_in_pillar = state.get("follow_ups_in_current_pillar", 0)
-        total_questions = state.get("total_questions_asked", 0)
+        total_questions = state.get("total_questions_asked", 0) + 1
         total_follow_ups = state.get("total_follow_ups", 0)
 
         if is_follow_up:
@@ -113,7 +115,6 @@ async def question_engine_node(state: InterviewState) -> Dict[str, Any]:
             total_follow_ups += 1
         else:
             questions_in_pillar += 1
-            total_questions += 1
 
         # Update focus areas with question count
         focus_areas = state.get("focus_areas", [])

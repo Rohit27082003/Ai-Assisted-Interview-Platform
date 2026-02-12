@@ -111,6 +111,7 @@ export interface EvaluationItem {
   justification: string;
   expected_vs_actual_comparison: string;
   similarity_score: number;
+  audio_url?: string | null;
 }
 
 export interface EvaluationResponse {

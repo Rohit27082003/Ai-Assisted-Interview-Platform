@@ -1,6 +1,9 @@
 """API routes for post-interview evaluation and report generation."""
 
+from __future__ import annotations
+
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,9 +19,21 @@ from app.services.graphs.reporting import build_reporting_graph
 from app.models.models import JobDescription
 from app.api.middleware.auth_middleware import require_recruiter, AuthenticatedUser
 from app.api.utils.db_utils import verify_interview_ownership, verify_report_ownership
+from app.services.aws.s3_service import get_s3_service
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _presign_audio_url(url: str | None) -> str | None:
+    """Convert an s3:// URI to a presigned HTTPS URL for browser playback."""
+    if not url or not url.startswith("s3://"):
+        return url
+    try:
+        return get_s3_service().generate_presigned_url(url, expiration=3600)
+    except Exception as e:
+        logger.warning(f"Failed to presign audio URL {url}: {e}")
+        return None
 router = APIRouter(prefix="/api/evaluations", tags=["Evaluations"])
 
 
@@ -119,6 +134,7 @@ async def evaluate_interview(
             justification=ev.get("justification", ""),
             expected_vs_actual_comparison=ev.get("expected_vs_actual_comparison", ""),
             similarity_score=ev.get("similarity_score", 0.0),
+            audio_url=_presign_audio_url(matching_transcript.audio_url) if matching_transcript else None,
         ))
 
     # Update candidate status
@@ -158,6 +174,15 @@ async def generate_report(
     if not evaluations:
         raise HTTPException(status_code=400, detail="No evaluations found. Run evaluation first.")
 
+    # Fetch transcripts for audio URLs
+    transcript_result = await db.execute(
+        select(Transcript)
+        .where(Transcript.interview_id == interview_id)
+        .order_by(Transcript.question_number)
+    )
+    transcripts = transcript_result.scalars().all()
+    transcript_audio_map = {t.question: t.audio_url for t in transcripts}
+
     # Build evaluation data
     eval_data = [
         {
@@ -175,6 +200,7 @@ async def generate_report(
             "justification": e.justification,
             "expected_vs_actual_comparison": e.expected_vs_actual_comparison or "",
             "similarity_score": e.similarity_score or 0.0,
+            "audio_url": _presign_audio_url(transcript_audio_map.get(e.question)),
         }
         for e in evaluations
     ]
@@ -246,9 +272,14 @@ async def generate_report(
     cheating_flag_strings = []
     for flag in cheating_flags:
         if isinstance(flag, dict):
-            cheating_flag_strings.append(
-                f"Level: {flag.get('level', 'unknown')}, Reasons: {flag.get('reasons', [])}"
-            )
+            severity = flag.get("severity", 0)
+            level = "High" if severity >= 7 else "Medium" if severity >= 4 else "Low"
+            reason = flag.get("reason", "Suspicious behavior detected")
+            patterns = flag.get("details", {}).get("pattern_flags", [])
+            parts = [f"{level} severity: {reason}"]
+            if patterns:
+                parts.append(f"Indicators: {', '.join(patterns)}")
+            cheating_flag_strings.append(" | ".join(parts))
 
     report = Report(
         interview_id=interview_id,
@@ -306,6 +337,24 @@ async def get_report(
     """Retrieve an existing report."""
     report = await verify_report_ownership(db, interview_id, user.recruiter_id)
 
+    # Ensure audio URLs are browser-accessible presigned HTTPS URLs
+    detailed_feedback = report.detailed_feedback or {}
+    per_q_eval = detailed_feedback.get("per_question_evaluation", [])
+    if per_q_eval:
+        # Fetch transcript audio URLs as fallback for entries missing audio_url
+        transcript_result = await db.execute(
+            select(Transcript)
+            .where(Transcript.interview_id == interview_id)
+            .order_by(Transcript.question_number)
+        )
+        transcripts = transcript_result.scalars().all()
+        audio_map = {t.question: t.audio_url for t in transcripts if t.audio_url}
+
+        for ev in per_q_eval:
+            url = ev.get("audio_url") or audio_map.get(ev.get("question", ""))
+            ev["audio_url"] = _presign_audio_url(url) if url else None
+        detailed_feedback = {**detailed_feedback, "per_question_evaluation": per_q_eval}
+
     return ReportResponse(
         report_id=report.report_id,
         interview_id=report.interview_id,
@@ -319,6 +368,6 @@ async def get_report(
         confidence_score=report.confidence_score,
         recommendation=report.recommendation.value,
         summary=report.summary,
-        detailed_feedback=report.detailed_feedback,
+        detailed_feedback=detailed_feedback,
         created_at=report.created_at,
     )

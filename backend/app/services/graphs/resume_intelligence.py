@@ -187,11 +187,11 @@ async def vector_scoring_node(state: ResumeGraphState) -> ResumeGraphState:
 async def weighted_scoring_node(state: ResumeGraphState) -> ResumeGraphState:
     """Compute final weighted score.
 
-    New Weights (Project Priority):
-      Projects: 40%
-      Skills: 30%
+    Weights (Stricter Experience Control):
+      Projects: 30%
+      Skills: 25%
+      Experience: 25%
       Vector Match: 15%
-      Experience: 10%
       Tooling: 5%
     """
     skills = state.get("skills_score", 0)

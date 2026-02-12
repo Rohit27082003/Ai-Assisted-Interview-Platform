@@ -116,7 +116,20 @@ async def rubric_scoring_node(state: EvaluationGraphState) -> EvaluationGraphSta
             practical = scores.practical_application.score
             
             overall = scores.overall_score
-            justification = scores.correctness.justification # Use correctness justification as primary or generic
+
+            # Build comprehensive justification from all dimensions
+            justification_parts = []
+            for dim_name, dim_obj in [
+                ("Correctness", scores.correctness),
+                ("Depth", scores.depth),
+                ("Reasoning", scores.reasoning),
+                ("Clarity", scores.clarity),
+                ("Relevance", scores.relevance),
+                ("Practical Application", scores.practical_application),
+            ]:
+                if dim_obj.justification:
+                    justification_parts.append(f"{dim_name} ({dim_obj.score}/5): {dim_obj.justification}")
+            justification = " | ".join(justification_parts) if justification_parts else "No justification available."
             
             # Comparison metrics
             comparison = scores.expected_vs_actual_comparison
